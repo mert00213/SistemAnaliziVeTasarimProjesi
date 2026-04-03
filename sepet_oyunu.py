@@ -56,6 +56,14 @@ SEPET_RENKLERI = {
     "altin":      {"renk": (200, 170, 40), "ic": (240, 210, 80), "kenar": (160, 130, 20), "fiyat": 2000},
 }
 
+# Görev (Achievement) tanımları
+GOREV_TANIMLARI = {
+    "50_elma": "50 Elma Topla",
+    "1000_hasarsiz": "Hiç Can Kaybetmeden 1000 Puan",
+    "5_altin": "Tek Oyunda 5 Altın Elma Yakala",
+}
+KOYU_KIRMIZI = (140, 20, 30)
+
 
 # =============================================================================
 # SINIF: ParalaksKatman (Paralaks Arka Plan Katmanı)
@@ -184,6 +192,82 @@ class KalpKirilma:
             surf = pygame.Surface((boyut, boyut), pygame.SRCALPHA)
             surf.fill((*p["renk"][:3], alpha))
             ekran.blit(surf, (px, py))
+
+
+# =============================================================================
+# SINIF: Duyuru (Announcer - Animasyonlu Bildirim)
+# =============================================================================
+class Duyuru:
+    """Ekranda büyüyüp küçülen animasyonlu bildirim yazısı."""
+
+    def __init__(self, metin, renk, sure_kare=120, y_pozisyon=None):
+        self.metin = metin
+        self.renk = renk
+        self.sure = sure_kare
+        self.max_sure = sure_kare
+        self.aktif = True
+        self.sayac = 0
+        self.y_poz = y_pozisyon or EKRAN_YUKSEKLIK // 3
+
+    def guncelle(self):
+        self.sure -= 1
+        self.sayac += 1
+        if self.sure <= 0:
+            self.aktif = False
+
+    def ciz(self, ekran, font):
+        if not self.aktif:
+            return
+        olcek = 1.0 + 0.18 * abs(math.sin(self.sayac * 0.12))
+        alpha = int(255 * min(1.0, self.sure / 30.0))
+        orijinal = font.render(self.metin, True, self.renk)
+        w = max(1, int(orijinal.get_width() * olcek))
+        h = max(1, int(orijinal.get_height() * olcek))
+        olcekli = pygame.transform.scale(orijinal, (w, h))
+        surf = pygame.Surface(olcekli.get_size(), pygame.SRCALPHA)
+        surf.blit(olcekli, (0, 0))
+        surf.set_alpha(alpha)
+        ekran.blit(surf, (EKRAN_GENISLIK // 2 - w // 2, self.y_poz - h // 2))
+
+
+# =============================================================================
+# SINIF: GorevBildirimi (Achievement GOAL! Bildirimi)
+# =============================================================================
+class GorevBildirimi:
+    """Görev tamamlandığında havalı 'GOAL!' bildirimi."""
+
+    def __init__(self, gorev_ismi):
+        self.gorev_ismi = gorev_ismi
+        self.sure = 180  # 3 saniye
+        self.aktif = True
+        self.sayac = 0
+
+    def guncelle(self):
+        self.sure -= 1
+        self.sayac += 1
+        if self.sure <= 0:
+            self.aktif = False
+
+    def ciz(self, ekran, buyuk_font, kucuk_font):
+        if not self.aktif:
+            return
+        alpha = int(255 * min(1.0, self.sure / 40.0))
+        olcek = 1.0 + 0.22 * abs(math.sin(self.sayac * 0.08))
+        goal_surf = buyuk_font.render("GOAL!", True, ALTIN)
+        w = max(1, int(goal_surf.get_width() * olcek))
+        h = max(1, int(goal_surf.get_height() * olcek))
+        olcekli = pygame.transform.scale(goal_surf, (w, h))
+        goal_alpha = pygame.Surface(olcekli.get_size(), pygame.SRCALPHA)
+        goal_alpha.blit(olcekli, (0, 0))
+        goal_alpha.set_alpha(alpha)
+        x = EKRAN_GENISLIK // 2 - w // 2
+        y = EKRAN_YUKSEKLIK // 4 - h // 2
+        ekran.blit(goal_alpha, (x, y))
+        isim_surf = kucuk_font.render(self.gorev_ismi, True, BEYAZ)
+        isim_alpha = pygame.Surface(isim_surf.get_size(), pygame.SRCALPHA)
+        isim_alpha.blit(isim_surf, (0, 0))
+        isim_alpha.set_alpha(alpha)
+        ekran.blit(isim_alpha, (EKRAN_GENISLIK // 2 - isim_surf.get_width() // 2, y + h + 10))
 
 
 # =============================================================================
@@ -439,6 +523,144 @@ class HealItem(FallingItem):
 
 
 # =============================================================================
+# SINIF: Boss (Kötü Meyve - Patron Seviyesi)
+# =============================================================================
+class Boss:
+    """5000 puanda ortaya çıkan dev 'Kötü Meyve' boss."""
+
+    def __init__(self):
+        self.genislik = 120
+        self.yukseklik = 80
+        self.x = float(EKRAN_GENISLIK // 2 - self.genislik // 2)
+        self.y = 60.0
+        self.hiz = 2.5
+        self.yon = 1
+        self.max_can = 30
+        self.can = self.max_can
+        self.aktif = True
+        self.bomba_zamanlayici = 0
+        self.bomba_bekleme = 50
+        self._parlama = 0
+        self.hasar_flash = 0
+
+    def guncelle(self):
+        self._parlama += 1
+        if self.hasar_flash > 0:
+            self.hasar_flash -= 1
+        self.x += self.hiz * self.yon
+        if self.x <= 20:
+            self.yon = 1
+        elif self.x >= EKRAN_GENISLIK - self.genislik - 20:
+            self.yon = -1
+        self.bomba_zamanlayici += 1
+
+    def bomba_atabilir(self):
+        if self.bomba_zamanlayici >= self.bomba_bekleme:
+            self.bomba_zamanlayici = 0
+            return True
+        return False
+
+    def hasar_al(self, miktar=1):
+        self.can -= miktar
+        self.hasar_flash = 8
+        if self.can <= 0:
+            self.can = 0
+            self.aktif = False
+
+    def ciz(self, ekran):
+        if not self.aktif:
+            return
+        ix = int(self.x)
+        iy = int(self.y)
+        cx = ix + self.genislik // 2
+        cy = iy + self.yukseklik // 2
+        govde_renk = BEYAZ if (self.hasar_flash > 0 and self.hasar_flash % 2 == 0) else KOYU_KIRMIZI
+        pygame.draw.ellipse(ekran, govde_renk, (ix, iy, self.genislik, self.yukseklik))
+        pygame.draw.ellipse(ekran, (120, 20, 40), (ix + 10, iy + 8, self.genislik - 20, self.yukseklik - 16))
+        goz_y = cy - 5
+        pygame.draw.circle(ekran, SARI, (cx - 20, goz_y), 10)
+        pygame.draw.circle(ekran, SIYAH, (cx - 20, goz_y), 5)
+        pygame.draw.circle(ekran, SARI, (cx + 20, goz_y), 10)
+        pygame.draw.circle(ekran, SIYAH, (cx + 20, goz_y), 5)
+        pygame.draw.arc(ekran, SIYAH, (cx - 15, cy + 5, 30, 15), 3.14, 0, 3)
+        for i in range(-2, 3):
+            sx = cx + i * 18
+            pygame.draw.polygon(ekran, (100, 20, 30), [
+                (sx - 5, iy + 5), (sx, iy - 15), (sx + 5, iy + 5)])
+        # Can barı
+        bar_w = self.genislik
+        bar_x = ix
+        bar_y = iy - 15
+        pygame.draw.rect(ekran, KOYU_GRI, (bar_x, bar_y, bar_w, 8), border_radius=3)
+        oran = self.can / self.max_can
+        can_renk = YESIL if oran > 0.5 else SARI if oran > 0.25 else KIRMIZI
+        pygame.draw.rect(ekran, can_renk, (bar_x, bar_y, int(bar_w * oran), 8), border_radius=3)
+        pygame.draw.rect(ekran, BEYAZ, (bar_x, bar_y, bar_w, 8), 1, border_radius=3)
+
+    def dikdortgen_al(self):
+        return pygame.Rect(int(self.x), int(self.y), self.genislik, self.yukseklik)
+
+
+# =============================================================================
+# SINIF: BossBomba (Boss'un Fırlattığı Çapraz Bomba)
+# =============================================================================
+class BossBomba(FallingItem):
+    """Boss'un oyuncuya doğru fırlattığı çapraz bomba."""
+
+    def __init__(self, x, y, hedef_x, hedef_y):
+        super().__init__(x, y, 20, 20, 0, TURUNCU)
+        dx = hedef_x - x
+        dy = hedef_y - y
+        uzunluk = max(1, math.sqrt(dx * dx + dy * dy))
+        self.vx = dx / uzunluk * 4.5
+        self.vy = dy / uzunluk * 4.5
+        self._sayac = 0
+
+    def guncelle(self):
+        self.x += self.vx
+        self.y += self.vy
+        self._sayac += 1
+        if (self.y > EKRAN_YUKSEKLIK + 50 or self.y < -50 or
+                self.x < -50 or self.x > EKRAN_GENISLIK + 50):
+            self.aktif = False
+
+    def ciz(self, ekran):
+        if not self.aktif:
+            return
+        cx = int(self.x + 10)
+        cy = int(self.y + 10)
+        parlama = abs(math.sin(self._sayac * 0.15)) * 3
+        pygame.draw.circle(ekran, (255, 100, 0), (cx, cy), int(10 + parlama))
+        pygame.draw.circle(ekran, SARI, (cx, cy), 6)
+        pygame.draw.circle(ekran, BEYAZ, (cx, cy), 3)
+
+
+# =============================================================================
+# SINIF: MermiItem (Boss Savaşında Düşen Mermi)
+# =============================================================================
+class MermiItem(FallingItem):
+    """Boss savaşında düşen mermi - toplayınca boss'a hasar verir."""
+
+    def __init__(self, x, hiz):
+        super().__init__(x, -30, 24, 24, hiz, ACIK_MAVI)
+        self._sayac = 0
+
+    def guncelle(self):
+        super().guncelle()
+        self._sayac += 1
+
+    def ciz(self, ekran):
+        cx = int(self.x + 12)
+        cy = int(self.y + 12)
+        parlama = abs(math.sin(self._sayac * 0.1)) * 2
+        pygame.draw.circle(ekran, (100, 200, 255), (cx, cy), int(12 + parlama))
+        pygame.draw.circle(ekran, BEYAZ, (cx, cy), 8)
+        pygame.draw.circle(ekran, ACIK_MAVI, (cx, cy), 5)
+        pygame.draw.polygon(ekran, BEYAZ, [
+            (cx - 3, cy + 2), (cx, cy - 5), (cx + 3, cy + 2)])
+
+
+# =============================================================================
 # SINIF: Basket (Sepet - Oyuncunun Kontrol Ettiği Nesne)
 # =============================================================================
 class Basket:
@@ -596,6 +818,15 @@ class SkorVeritabani:
                 bag.execute(
                     "INSERT OR IGNORE INTO oyuncu_veri (anahtar, deger) VALUES ('bakiye', '0')"
                 )
+                # Görev (Achievement) tablosu
+                bag.execute("""
+                    CREATE TABLE IF NOT EXISTS achievements (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        gorev_id TEXT UNIQUE NOT NULL,
+                        tamamlandi INTEGER DEFAULT 0,
+                        tarih TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
                 bag.commit()
         except sqlite3.Error as e:
             print(f"[UYARI] Veritabanı tablosu oluşturulamadı: {e}")
@@ -734,6 +965,43 @@ class SkorVeritabani:
         except sqlite3.Error as e:
             print(f"[UYARI] Aktif sepet ayarlanamadı: {e}")
 
+    # --- Görev (Achievement) metotları ---
+    def gorev_tamamlandi_mi(self, gorev_id):
+        """Görevin daha önce tamamlanıp tamamlanmadığını kontrol eder."""
+        try:
+            with sqlite3.connect(self.db_yolu) as bag:
+                cursor = bag.execute(
+                    "SELECT tamamlandi FROM achievements WHERE gorev_id = ?",
+                    (gorev_id,)
+                )
+                sonuc = cursor.fetchone()
+                return bool(sonuc and sonuc[0])
+        except sqlite3.Error:
+            return False
+
+    def gorev_tamamla(self, gorev_id):
+        """Görevi tamamlandı olarak işaretler."""
+        try:
+            with sqlite3.connect(self.db_yolu) as bag:
+                bag.execute(
+                    "INSERT OR REPLACE INTO achievements (gorev_id, tamamlandi) VALUES (?, 1)",
+                    (gorev_id,)
+                )
+                bag.commit()
+        except sqlite3.Error as e:
+            print(f"[UYARI] Görev kaydedilemedi: {e}")
+
+    def tamamlanan_gorevler(self):
+        """Tamamlanan tüm görevlerin ID listesini döndürür."""
+        try:
+            with sqlite3.connect(self.db_yolu) as bag:
+                cursor = bag.execute(
+                    "SELECT gorev_id FROM achievements WHERE tamamlandi = 1"
+                )
+                return [row[0] for row in cursor.fetchall()]
+        except sqlite3.Error:
+            return []
+
 
 # =============================================================================
 # SINIF: GameManager (Oyun Yöneticisi)
@@ -769,10 +1037,23 @@ class GameManager:
 
         # --- Ses efektleri ---
         self.bomba_ses = None
+        self.kombo_ses = None
+        self.rekor_ses = None
+        self.gorev_ses = None
+        self.boss_ses = None
         try:
             self.bomba_ses = pygame.mixer.Sound(os.path.join(ses_klasoru, "bomba.mp3"))
-        except Exception as e:
-            print(f"[UYARI] Bomba ses efekti yüklenemedi: {e}")
+        except Exception:
+            pass
+        ses_ekstra = {"kombo_ses": "combo.wav", "rekor_ses": "record.wav",
+                      "gorev_ses": "goal.wav", "boss_ses": "boss_hit.wav"}
+        for attr, dosya in ses_ekstra.items():
+            try:
+                yol = os.path.join(ses_klasoru, dosya)
+                if os.path.exists(yol):
+                    setattr(self, attr, pygame.mixer.Sound(yol))
+            except Exception:
+                pass
 
         # --- Görsel varlıkları yükleme ---
         self.sepet_img = None
@@ -844,6 +1125,24 @@ class GameManager:
         # Market scroll pozisyonu
         self.market_scroll = 0
 
+        # --- Duyuru (Announcer) sistemi ---
+        self.duyurular = []
+
+        # --- Görev (Achievement) bildirimleri ---
+        self.gorev_bildirimleri = []
+
+        # --- Gece/Gündüz döngüsü ---
+        self.gece_modu = False
+        self.gece_surface = pygame.Surface((EKRAN_GENISLIK, EKRAN_YUKSEKLIK), pygame.SRCALPHA)
+        self.isik_yaricap = 130
+
+        # --- Boss sistemi ---
+        self.boss = None
+        self.boss_aktif = False
+        self.boss_yenildi = False
+        self.boss_bombalar = []
+        self.boss_mermi_zamanlayici = 0
+
         # Arka plan yıldızları (dekoratif)
         self.yildizlar = [(random.randint(0, EKRAN_GENISLIK),
                            random.randint(0, EKRAN_YUKSEKLIK // 2),
@@ -881,15 +1180,44 @@ class GameManager:
         self.fever_kalan_kare = 0  # 5 saniye = 300 kare (60 FPS)
         self.fever_parlama = 0
 
+        # Gece/Gündüz
+        self.gece_modu = False
+
+        # Boss
+        self.boss = None
+        self.boss_aktif = False
+        self.boss_yenildi = False
+        self.boss_bombalar = []
+        self.boss_mermi_zamanlayici = 0
+
+        # Duyurular
+        self.duyurular = []
+        self.gorev_bildirimleri = []
+
+        # Achievement sayaçları (oyun başına)
+        self.toplanan_elma_sayisi = 0
+        self.toplanan_altin_sayisi = 0
+        self.hasar_alindi = False
+
     # -------------------------------------------------------------------------
     # Nesne Üretimi
     # -------------------------------------------------------------------------
     def _nesne_uret(self):
         """
         Zamanlayıcıya göre yeni düşen nesne üretir.
-        Fever modunda sadece altın elmalar düşer.
+        Boss modunda mermi, Fever modunda altın elma,
         Normal: %68 elma, %25 bomba, %5 altın elma, %2 can paketi.
         """
+        if self.boss_aktif:
+            # Boss modunda sadece mermi düşür
+            self.boss_mermi_zamanlayici += 1
+            if self.boss_mermi_zamanlayici >= 40:
+                self.boss_mermi_zamanlayici = 0
+                x = random.randint(20, EKRAN_GENISLIK - 54)
+                hiz = self.temel_hiz + 0.5
+                self.dusen_nesneler.append(MermiItem(x, hiz))
+            return
+
         self.nesne_zamanlayici += 1
         if self.nesne_zamanlayici >= self.nesne_bekleme:
             self.nesne_zamanlayici = 0
@@ -954,9 +1282,20 @@ class GameManager:
                 px = nesne.x + nesne.genislik // 2
                 py = nesne.y + nesne.yukseklik // 2
 
-                if isinstance(nesne, GoldenItem):
+                if isinstance(nesne, MermiItem):
+                    # Boss'a hasar ver
+                    if self.boss_aktif and self.boss and self.boss.aktif:
+                        self.boss.hasar_al()
+                        if self.boss_ses:
+                            self.boss_ses.play()
+                    self.parcacik_yonetici.patlama_ekle(px, py, ACIK_MAVI, 15)
+                    self.sepet.squash_baslat()
+
+                elif isinstance(nesne, GoldenItem):
                     kazanilan = nesne.puan * self.kombo_carpan
                     self.skor += kazanilan
+                    self.toplanan_elma_sayisi += 1
+                    self.toplanan_altin_sayisi += 1
                     self.parcacik_yonetici.patlama_ekle(px, py, ALTIN, 25)
                     self.sepet.squash_baslat()
                     self._kombo_artir()
@@ -970,13 +1309,15 @@ class GameManager:
                 elif isinstance(nesne, GoodItem):
                     kazanilan = nesne.puan * self.kombo_carpan
                     self.skor += kazanilan
+                    self.toplanan_elma_sayisi += 1
                     self.parcacik_yonetici.patlama_ekle(px, py, YESIL, 15)
                     self.sepet.squash_baslat()
                     self._kombo_artir()
 
-                elif isinstance(nesne, BadItem):
+                elif isinstance(nesne, (BadItem, BossBomba)):
                     eski_can = self.can
                     self.can -= 1
+                    self.hasar_alindi = True
                     if self.bomba_ses:
                         self.bomba_ses.play()
                     self.parcacik_yonetici.patlama_ekle(px, py, TURUNCU, 20)
@@ -986,19 +1327,51 @@ class GameManager:
                     self.kombo_carpan = 1
                     # Kalp kırılma efekti
                     if eski_can > self.can:
-                        kalp_idx = self.can  # Kaybedilen kalbin indeksi
+                        kalp_idx = self.can
                         kalp_x = EKRAN_GENISLIK - 40 - kalp_idx * 35
                         self.kalp_kirilmalari.append(
                             KalpKirilma(kalp_x, 8, self.kalp_img)
                         )
+
+        # Boss bombaları ile sepet çarpışması
+        for bomba in self.boss_bombalar:
+            if not bomba.aktif:
+                continue
+            if sepet_rect.colliderect(bomba.dikdortgen_al()):
+                bomba.aktif = False
+                eski_can = self.can
+                self.can -= 1
+                self.hasar_alindi = True
+                if self.bomba_ses:
+                    self.bomba_ses.play()
+                px = int(bomba.x + 10)
+                py = int(bomba.y + 10)
+                self.parcacik_yonetici.patlama_ekle(px, py, TURUNCU, 20)
+                self.ekran_sarsintisi.baslat()
+                self.kombo_sayac = 0
+                self.kombo_carpan = 1
+                if eski_can > self.can:
+                    kalp_idx = self.can
+                    kalp_x = EKRAN_GENISLIK - 40 - kalp_idx * 35
+                    self.kalp_kirilmalari.append(
+                        KalpKirilma(kalp_x, 8, self.kalp_img)
+                    )
 
     def _kombo_artir(self):
         """Kombo sayacını artırır ve çarpanı günceller."""
         self.kombo_sayac += 1
         if self.kombo_sayac >= 10:
             self.kombo_carpan = 5
+            if self.kombo_sayac == 10:
+                self.duyurular.append(Duyuru("UNSTOPPABLE!", ALTIN, 90))
+                if self.kombo_ses:
+                    self.kombo_ses.play()
         elif self.kombo_sayac >= 5:
             self.kombo_carpan = 2
+            if self.kombo_sayac == 5:
+                self.duyurular.append(Duyuru("COMBO!", SARI, 75, EKRAN_YUKSEKLIK // 3 + 40))
+                if self.kombo_ses:
+                    self.kombo_ses.play()
         else:
             self.kombo_carpan = 1
 
@@ -1010,6 +1383,35 @@ class GameManager:
             self.fever_aktif = True
             self.fever_kalan_kare = 300  # 5 saniye
             self.kombo_bar = 1.0
+
+    # -------------------------------------------------------------------------
+    # Görev (Achievement) Kontrol
+    # -------------------------------------------------------------------------
+    def _gorev_kontrol(self):
+        """Görevleri kontrol edip tamamlananları veritabanına kaydeder."""
+        # 50 Elma Topla
+        if self.toplanan_elma_sayisi >= 50:
+            if not self.veritabani.gorev_tamamlandi_mi("50_elma"):
+                self.veritabani.gorev_tamamla("50_elma")
+                self.gorev_bildirimleri.append(GorevBildirimi(GOREV_TANIMLARI["50_elma"]))
+                if self.gorev_ses:
+                    self.gorev_ses.play()
+
+        # Hiç Can Kaybetmeden 1000 Puan
+        if self.skor >= 1000 and not self.hasar_alindi:
+            if not self.veritabani.gorev_tamamlandi_mi("1000_hasarsiz"):
+                self.veritabani.gorev_tamamla("1000_hasarsiz")
+                self.gorev_bildirimleri.append(GorevBildirimi(GOREV_TANIMLARI["1000_hasarsiz"]))
+                if self.gorev_ses:
+                    self.gorev_ses.play()
+
+        # Tek Oyunda 5 Altın Elma
+        if self.toplanan_altin_sayisi >= 5:
+            if not self.veritabani.gorev_tamamlandi_mi("5_altin"):
+                self.veritabani.gorev_tamamla("5_altin")
+                self.gorev_bildirimleri.append(GorevBildirimi(GOREV_TANIMLARI["5_altin"]))
+                if self.gorev_ses:
+                    self.gorev_ses.play()
 
     # -------------------------------------------------------------------------
     # Arka Plan Çizimi
@@ -1102,6 +1504,14 @@ class GameManager:
         # Kalp kırılma efektleri
         for kk in self.kalp_kirilmalari:
             kk.ciz(ekran)
+
+        # Boss durumu göstergesi
+        if self.boss_aktif and self.boss:
+            boss_txt = self.orta_font.render("💀 BOSS FIGHT!", True, KIRMIZI)
+            ekran.blit(boss_txt, (EKRAN_GENISLIK // 2 - boss_txt.get_width() // 2, 48))
+        elif self.gece_modu:
+            gece_txt = self.mini_font.render("🌙 Gece Modu", True, (150, 150, 200))
+            ekran.blit(gece_txt, (10, 48))
 
     # -------------------------------------------------------------------------
     # Ana Menü Ekranı
@@ -1525,11 +1935,63 @@ class GameManager:
                 self.fever_aktif = False
                 self.kombo_bar = 0.0
 
+        # --- Gece/Gündüz döngüsü (her 1000 puanda bir değişir) ---
+        self.gece_modu = (self.skor // 1000) % 2 == 1
+
+        # --- Boss aktivasyonu (5000 puan) ---
+        if self.skor >= 5000 and not self.boss_aktif and not self.boss_yenildi:
+            self.boss_aktif = True
+            self.boss = Boss()
+            self.duyurular.append(Duyuru("BOSS FIGHT!", KIRMIZI, 120))
+
+        # --- Boss güncelleme ---
+        if self.boss_aktif and self.boss:
+            self.boss.guncelle()
+            # Boss bomba fırlatsın
+            if self.boss.bomba_atabilir():
+                bx = int(self.boss.x) + self.boss.genislik // 2
+                by = int(self.boss.y) + self.boss.yukseklik
+                hedef_x = self.sepet.x + self.sepet.base_genislik // 2
+                hedef_y = self.sepet.y + self.sepet.base_yukseklik // 2
+                self.boss_bombalar.append(BossBomba(bx, by, hedef_x, hedef_y))
+            # Boss bombaları güncelle
+            for b in self.boss_bombalar:
+                b.guncelle()
+            self.boss_bombalar = [b for b in self.boss_bombalar if b.aktif]
+            # Boss öldü mü?
+            if not self.boss.aktif:
+                self.boss_aktif = False
+                self.boss_yenildi = True
+                self.skor += 500  # Boss ödülü
+                self.boss_bombalar.clear()
+                self.parcacik_yonetici.patlama_ekle(
+                    int(self.boss.x) + 60, int(self.boss.y) + 40, ALTIN, 40)
+                self.duyurular.append(Duyuru("BOSS DEFEATED!", ACIK_YESIL, 120))
+
+        # --- Duyuruları güncelle ---
+        for d in self.duyurular:
+            d.guncelle()
+        self.duyurular = [d for d in self.duyurular if d.aktif]
+
+        # --- Görev bildirimlerini güncelle ---
+        for g in self.gorev_bildirimleri:
+            g.guncelle()
+        self.gorev_bildirimleri = [g for g in self.gorev_bildirimleri if g.aktif]
+
+        # --- Görev (Achievement) kontrol ---
+        self._gorev_kontrol()
+
         # Can bittiyse oyunu bitir
         if self.can <= 0:
             self.can = 0
             self.son_skor = self.skor
+            eski_en_yuksek = self.en_yuksek_skor
             self.en_yuksek_skor = self.veritabani.en_yuksek_skor()
+            # Yeni rekor duyurusu
+            if self.son_skor > eski_en_yuksek and self.son_skor > 0:
+                self.duyurular.append(Duyuru("NEW RECORD!", ALTIN, 150))
+                if self.rekor_ses:
+                    self.rekor_ses.play()
             # Kazanılan skoru bakiyeye ekle
             if self.son_skor > 0:
                 self.veritabani.bakiye_guncelle(self.son_skor)
@@ -1554,14 +2016,41 @@ class GameManager:
         for nesne in self.dusen_nesneler:
             nesne.ciz(hedef)
 
+        # Boss bombalar
+        for bomba in self.boss_bombalar:
+            bomba.ciz(hedef)
+
+        # Boss
+        if self.boss_aktif and self.boss:
+            self.boss.ciz(hedef)
+
         # Sepet
         self.sepet.ciz(hedef)
 
         # Parçacık efektleri
         self.parcacik_yonetici.ciz(hedef)
 
-        # HUD (skor, can vb.)
+        # --- Gece modu overlay + spotlight ---
+        if self.gece_modu:
+            self.gece_surface.fill((0, 0, 0, 160))
+            # Spotlight: sepet etrafında aydınlık daire
+            sepet_cx = self.sepet.x + self.sepet.base_genislik // 2
+            sepet_cy = self.sepet.y + self.sepet.base_yukseklik // 2
+            isik = pygame.Surface((EKRAN_GENISLIK, EKRAN_YUKSEKLIK), pygame.SRCALPHA)
+            pygame.draw.circle(isik, (0, 0, 0, 160), (sepet_cx, sepet_cy), self.isik_yaricap)
+            self.gece_surface.blit(isik, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
+            hedef.blit(self.gece_surface, (0, 0))
+
+        # HUD (skor, can vb.) - gece katmanının üstünde
         self._hud_ciz(hedef=hedef)
+
+        # Duyurular (Announcer)
+        for d in self.duyurular:
+            d.ciz(hedef, self.buyuk_font)
+
+        # Görev bildirimleri
+        for g in self.gorev_bildirimleri:
+            g.ciz(hedef, self.buyuk_font, self.kucuk_font)
 
         # Ekran sarsıntısı offseti ile ana ekrana blit
         ox, oy = self.ekran_sarsintisi.offset_al()
