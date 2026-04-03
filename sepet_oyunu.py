@@ -14,6 +14,7 @@ import math
 
 # --- Pygame başlatma ---
 pygame.init()
+pygame.mixer.init()
 
 # =============================================================================
 # SABITLER
@@ -231,13 +232,20 @@ class GameManager:
         self.orta_font = pygame.font.SysFont("Arial", 26)
         self.kucuk_font = pygame.font.SysFont("Arial", 20)
 
-        # --- Buraya ileride arka plan müziği eklenebilir ---
-        # pygame.mixer.music.load("assets/arkaplan_muzik.mp3")
-        # pygame.mixer.music.play(-1)
+        # --- Arka plan müziği ---
+        try:
+            ses_klasoru = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "sounds")
+            pygame.mixer.music.load(os.path.join(ses_klasoru, "arkaplan.mp3"))
+            pygame.mixer.music.play(-1)
+        except Exception as e:
+            print(f"[UYARI] Arka plan müziği yüklenemedi: {e}")
 
-        # --- Buraya ileride ses efektleri eklenebilir ---
-        # self.elma_ses = pygame.mixer.Sound("assets/elma_toplama.wav")
-        # self.bomba_ses = pygame.mixer.Sound("assets/patlama.wav")
+        # --- Ses efektleri ---
+        self.bomba_ses = None
+        try:
+            self.bomba_ses = pygame.mixer.Sound(os.path.join(ses_klasoru, "bomba.mp3"))
+        except Exception as e:
+            print(f"[UYARI] Bomba ses efekti yüklenemedi: {e}")
 
         # Oyun durumu
         self.durum = "menu"  # "menu", "oyun", "bitti"
@@ -362,8 +370,8 @@ class GameManager:
                 elif isinstance(nesne, BadItem):
                     # Kötü nesne çarptı → can azalt
                     self.can -= 1
-                    # --- Buraya ses efekti eklenebilir ---
-                    # self.bomba_ses.play()
+                    if self.bomba_ses:
+                        self.bomba_ses.play()
 
     # -------------------------------------------------------------------------
     # Arka Plan Çizimi
