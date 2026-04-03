@@ -1,0 +1,31 @@
+{
+  "liderlik_tablosu": [
+    {
+      "sira": 1,
+      "isim": "berra",
+      "skor": 6920
+    },
+    {
+      "sira": 2,
+      "isim": "xddd",
+      "skor": 5760
+    },
+    {
+      "sira": 3,
+      "isim": "xd",
+      "skor": 5560
+    },
+    {
+      "sira": 4,
+      "isim": "eymen",
+      "skor": 5000
+    },
+    {
+      "sira": 5,
+      "isim": "xd",
+      "skor": 4390
+    }
+  ],
+  "guncelleme_tarihi": "2026-04-03T17:55:22",
+  "toplam_kayit": 5
+}

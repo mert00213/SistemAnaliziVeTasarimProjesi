@@ -12,6 +12,9 @@ import sys
 import os
 import math
 import sqlite3
+import json
+import time
+from collections import deque
 
 # --- Pygame başlatma ---
 pygame.init()
@@ -172,6 +175,326 @@ class EkranSarsintisi:
 
 
 # =============================================================================
+# SINIF: ReplayFrame (Tekrar İzleme Kare Verisi)
+# =============================================================================
+class ReplayFrame:
+    """Tek bir oyun karesinin anlık görüntüsünü saklayan veri yapısı."""
+    __slots__ = ['sepet_x', 'nesneler', 'skor', 'can', 'kombo', 'fever']
+
+    def __init__(self, sepet_x, nesneler, skor, can, kombo, fever):
+        self.sepet_x = sepet_x
+        self.nesneler = nesneler  # [(x, y, tip_str), ...]
+        self.skor = skor
+        self.can = can
+        self.kombo = kombo
+        self.fever = fever
+
+
+# =============================================================================
+# SINIF: ReplaySystem (Tekrar İzleme Sistemi)
+# =============================================================================
+class ReplaySystem:
+    """
+    Oyunun son 10 saniyesini (600 kare @ 60 FPS) kaydeder.
+    Oyun bitince 'Tekrar İzle' moduyla bu kareleri canlandırır.
+    Deque veri yapısı ile sabit bellek kullanımı sağlanır.
+    """
+    MAKS_KARE = 600  # 10 saniye @ 60 FPS
+
+    def __init__(self):
+        self.kareler = deque(maxlen=self.MAKS_KARE)
+        self.oynatma_indeks = 0
+        self.oynatiliyor = False
+
+    def kare_kaydet(self, sepet, dusen_nesneler, skor, can, kombo, fever):
+        """Mevcut kareyi kayıt listesine ekler."""
+        nesne_listesi = []
+        for n in dusen_nesneler:
+            if n.aktif:
+                tip = type(n).__name__
+                nesne_listesi.append((n.x, n.y, n.genislik, n.yukseklik, tip))
+        frame = ReplayFrame(sepet.x, nesne_listesi, skor, can, kombo, fever)
+        self.kareler.append(frame)
+
+    def oynatma_baslat(self):
+        """Tekrar izleme modunu başlatır."""
+        self.oynatma_indeks = 0
+        self.oynatiliyor = True
+
+    def oynatma_durdur(self):
+        """Tekrar izleme modunu durdurur."""
+        self.oynatiliyor = False
+        self.oynatma_indeks = 0
+
+    def sonraki_kare(self):
+        """Sıradaki kareyi döndürür. Bitince None döner."""
+        if self.oynatma_indeks >= len(self.kareler):
+            self.oynatiliyor = False
+            return None
+        kare = self.kareler[self.oynatma_indeks]
+        self.oynatma_indeks += 1
+        return kare
+
+    def sifirla(self):
+        """Kayıtları temizler."""
+        self.kareler.clear()
+        self.oynatma_indeks = 0
+        self.oynatiliyor = False
+
+
+# =============================================================================
+# SINIF: GhostSepet (Hayalet Sepet - En İyi Skor Yarışması)
+# =============================================================================
+class GhostSepet:
+    """
+    En yüksek skorlu oyunun sepet hareketlerini kaydeden ve
+    yeni oyunda şeffaf bir 'Hayalet Sepet' olarak gösteren sınıf.
+    """
+
+    def __init__(self):
+        self.hareketler = []      # [(kare_no, x_pozisyon), ...]
+        self.aktif = False
+        self.kare_sayaci = 0
+
+    def hareketi_kaydet(self, kare_no, x):
+        """Sepet pozisyonunu kayıt listesine ekler."""
+        self.hareketler.append((kare_no, x))
+
+    def pozisyon_al(self, kare_no):
+        """Belirli bir karedeki ghost sepet X pozisyonunu döndürür."""
+        if not self.hareketler or kare_no >= len(self.hareketler):
+            return None
+        return self.hareketler[kare_no][1]
+
+    def ciz(self, ekran, kare_no, sepet_genislik, sepet_yukseklik, y_poz):
+        """Şeffaf hayalet sepeti ekrana çizer."""
+        x = self.pozisyon_al(kare_no)
+        if x is None:
+            return
+        ghost_surf = pygame.Surface((sepet_genislik, sepet_yukseklik), pygame.SRCALPHA)
+        # Yarı saydam mavi-beyaz tonlarında sepet
+        ghost_surf.fill((100, 180, 255, 70))
+        pygame.draw.rect(ghost_surf, (150, 200, 255, 100),
+                         (5, 10, sepet_genislik - 10, sepet_yukseklik - 15), border_radius=4)
+        pygame.draw.rect(ghost_surf, (200, 230, 255, 120),
+                         (0, 0, sepet_genislik, sepet_yukseklik), 2, border_radius=6)
+        ekran.blit(ghost_surf, (x, y_poz))
+        # "GHOST" etiketi
+        etiket_font = pygame.font.SysFont("Arial", 10)
+        etiket = etiket_font.render("GHOST", True, (150, 200, 255))
+        etiket_alpha = pygame.Surface(etiket.get_size(), pygame.SRCALPHA)
+        etiket_alpha.blit(etiket, (0, 0))
+        etiket_alpha.set_alpha(100)
+        ekran.blit(etiket_alpha, (x + sepet_genislik // 2 - etiket.get_width() // 2, y_poz - 12))
+
+    def veriyi_json_al(self):
+        """Ghost verilerini JSON-serileştirilebilir formata dönüştürür."""
+        return json.dumps(self.hareketler)
+
+    @staticmethod
+    def json_den_yukle(json_str):
+        """JSON string'den ghost verilerini yükler."""
+        ghost = GhostSepet()
+        try:
+            ghost.hareketler = json.loads(json_str)
+            ghost.aktif = len(ghost.hareketler) > 0
+        except (json.JSONDecodeError, TypeError):
+            ghost.hareketler = []
+            ghost.aktif = False
+        return ghost
+
+
+# =============================================================================
+# SINIF: DinamikZorlukMotoru (Dynamic Difficulty Engine)
+# =============================================================================
+class DinamikZorlukMotoru:
+    """
+    Oyuncunun performansına göre (kaçırma oranı) rüzgar şiddetini
+    ve nesne hızlarını anlık olarak optimize eden algoritma.
+    Kayar pencere (sliding window) ile son 60 nesneyi takip eder.
+    """
+    PENCERE_BOYUTU = 60  # Son 60 nesne üzerinden hesaplama
+
+    def __init__(self):
+        self.toplam_uretilen = 0
+        self.toplam_yakalanan = 0
+        self.toplam_kacirilan = 0
+        # Kayar pencere: True=yakalandı, False=kaçırıldı
+        self.pencere = deque(maxlen=self.PENCERE_BOYUTU)
+        self.kacirma_orani = 0.0        # 0.0 - 1.0
+        self.ruzgar_carpan = 1.0        # Rüzgar şiddeti çarpanı
+        self.hiz_carpan = 1.0           # Nesne hızı çarpanı
+        self.son_guncelleme = 0
+
+    def nesne_yakalandi(self):
+        """Bir nesne yakalandığında çağrılır."""
+        self.toplam_yakalanan += 1
+        self.toplam_uretilen += 1
+        self.pencere.append(True)
+
+    def nesne_kacirildi(self):
+        """Bir nesne kaçırıldığında çağrılır."""
+        self.toplam_kacirilan += 1
+        self.toplam_uretilen += 1
+        self.pencere.append(False)
+
+    def guncelle(self):
+        """
+        Kaçırma oranına göre zorluk parametrelerini optimize eder.
+        - Yüksek kaçırma oranı (>%50): Zorluk azalır (yavaş hız, düşük rüzgar)
+        - Düşük kaçırma oranı (<%20): Zorluk artar (hızlı nesneler, güçlü rüzgar)
+        - Orta bant (%20-%50): Normal zorluk
+        """
+        if len(self.pencere) < 10:
+            return  # Yeterli veri yok
+
+        # Kaçırma oranı hesapla (kayar pencere)
+        kacirilan = sum(1 for x in self.pencere if not x)
+        self.kacirma_orani = kacirilan / len(self.pencere)
+
+        # Zorluk eğrisi (sigmoid benzeri yumuşak geçiş)
+        if self.kacirma_orani > 0.60:
+            # Oyuncu zorlanıyor: kolaylaştır
+            self.hiz_carpan = max(0.7, 1.0 - (self.kacirma_orani - 0.60) * 1.5)
+            self.ruzgar_carpan = max(0.4, 1.0 - (self.kacirma_orani - 0.60) * 2.0)
+        elif self.kacirma_orani < 0.15:
+            # Oyuncu çok iyi: zorlaştır
+            self.hiz_carpan = min(1.5, 1.0 + (0.15 - self.kacirma_orani) * 3.0)
+            self.ruzgar_carpan = min(1.8, 1.0 + (0.15 - self.kacirma_orani) * 4.0)
+        else:
+            # Normal bant: yumuşak geçiş
+            self.hiz_carpan += (1.0 - self.hiz_carpan) * 0.05
+            self.ruzgar_carpan += (1.0 - self.ruzgar_carpan) * 0.05
+
+    def hiz_al(self, temel_hiz):
+        """Dinamik zorluk çarpanıyla düzeltilmiş hız döndürür."""
+        return temel_hiz * self.hiz_carpan
+
+    def ruzgar_siddeti_al(self, temel_siddet):
+        """Dinamik zorluk çarpanıyla düzeltilmiş rüzgar şiddeti döndürür."""
+        return temel_siddet * self.ruzgar_carpan
+
+    def sifirla(self):
+        """Tüm sayaçları sıfırlar."""
+        self.toplam_uretilen = 0
+        self.toplam_yakalanan = 0
+        self.toplam_kacirilan = 0
+        self.pencere.clear()
+        self.kacirma_orani = 0.0
+        self.ruzgar_carpan = 1.0
+        self.hiz_carpan = 1.0
+
+
+# =============================================================================
+# SINIF: SkorAPIYoneticisi (Global API Score Manager)
+# =============================================================================
+class SkorAPIYoneticisi:
+    """
+    Skorları JSON formatında dışarıya aktaran ve hayali bir
+    API'ye göndermeye hazır bir yapı sağlayan sınıf.
+    requests kütüphanesi hazırlığı içerir.
+    """
+    API_URL = "https://api.sepetoyunu.example.com/v1/skorlar"
+
+    def __init__(self, veritabani):
+        self.veritabani = veritabani
+        self._requests_mevcut = False
+        try:
+            import requests as _req
+            self._requests_mevcut = True
+        except ImportError:
+            self._requests_mevcut = False
+
+    def skor_json_olustur(self, isim, skor, seviye, sure_saniye, ekstra=None):
+        """Tek bir skor kaydını JSON formatına dönüştürür."""
+        veri = {
+            "oyuncu": isim,
+            "skor": skor,
+            "seviye": seviye,
+            "sure_saniye": round(sure_saniye, 2),
+            "tarih": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "oyun_versiyon": "2.0",
+            "platform": sys.platform,
+        }
+        if ekstra and isinstance(ekstra, dict):
+            veri["ekstra"] = ekstra
+        return veri
+
+    def liderlik_tablosu_json(self):
+        """Veritabanındaki top 5 skoru JSON formatında döndürür."""
+        top5 = self.veritabani.en_iyi_5_al()
+        sonuc = {
+            "liderlik_tablosu": [
+                {"sira": i + 1, "isim": isim, "skor": skor}
+                for i, (isim, skor) in enumerate(top5)
+            ],
+            "guncelleme_tarihi": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "toplam_kayit": len(top5),
+        }
+        return sonuc
+
+    def json_dosyaya_aktar(self, dosya_yolu=None):
+        """Liderlik tablosunu JSON dosyasına aktarır."""
+        if dosya_yolu is None:
+            dosya_yolu = os.path.join(OYUN_KLASORU, "skorlar_export.json")
+        veri = self.liderlik_tablosu_json()
+        try:
+            with open(dosya_yolu, 'w', encoding='utf-8') as f:
+                json.dump(veri, f, ensure_ascii=False, indent=2)
+            return True, dosya_yolu
+        except IOError as e:
+            print(f"[UYARI] JSON dışa aktarma hatası: {e}")
+            return False, None
+
+    def api_ye_gonder(self, skor_verisi):
+        """
+        Skor verisini hayali API'ye gönderir.
+        requests kütüphanesi yüklüyse gerçek HTTP isteği yapar,
+        yoksa simüle eder ve sonucu döndürür.
+        """
+        json_payload = json.dumps(skor_verisi, ensure_ascii=False)
+
+        if self._requests_mevcut:
+            try:
+                import requests
+                yanit = requests.post(
+                    self.API_URL,
+                    data=json_payload,
+                    headers={"Content-Type": "application/json; charset=utf-8"},
+                    timeout=5
+                )
+                return {
+                    "basarili": yanit.status_code == 200,
+                    "durum_kodu": yanit.status_code,
+                    "yanit": yanit.text[:200],
+                }
+            except Exception as e:
+                return {
+                    "basarili": False,
+                    "hata": str(e),
+                    "not": "API bağlantısı kurulamadı"
+                }
+        else:
+            # requests yüklü değil: simülasyon modu
+            return {
+                "basarili": True,
+                "simülasyon": True,
+                "gonderilen_veri": skor_verisi,
+                "not": "requests kütüphanesi yüklü değil, simülasyon modu aktif. "
+                       "'pip install requests' ile yükleyebilirsiniz.",
+            }
+
+    def toplu_aktar(self):
+        """Tüm skorları JSON dosyasına aktarır ve API'ye gönderir."""
+        basarili, yol = self.json_dosyaya_aktar()
+        api_sonuc = self.api_ye_gonder(self.liderlik_tablosu_json())
+        return {
+            "dosya_aktarimi": {"basarili": basarili, "yol": yol},
+            "api_sonucu": api_sonuc,
+        }
+
+
+# =============================================================================
 # SINIF: KalpKirilma (Kalp Kırılma Efekti)
 # =============================================================================
 class KalpKirilma:
@@ -309,27 +632,38 @@ class RuzgarSistemi:
         self.degisim_sayaci += 1
         if self.degisim_sayaci >= self.degisim_araliği:
             self.degisim_sayaci = 0
-            self.hedef = random.uniform(-3.0, 3.0)
+            self.hedef = random.uniform(-2.0, 2.0)
             self.degisim_araliği = random.randint(120, 300)
         # Yumuşak geçiş
         self.siddet += (self.hedef - self.siddet) * 0.02
+        # Şiddet sınırı: asla ±3'ü geçemez
+        self.siddet = max(-3.0, min(3.0, self.siddet))
 
     def ciz(self, ekran, font):
         """Rüzgar ok göstergesini çizer."""
-        ok_x = EKRAN_GENISLIK // 2
-        ok_y = EKRAN_YUKSEKLIK - 18
+        # Güvenlik: siddet None veya aşırı değer kontrolü
+        if self.siddet is None:
+            self.siddet = 0.0
+        self.siddet = max(-10.0, min(10.0, float(self.siddet)))
+
+        ok_x = int(EKRAN_GENISLIK // 2)
+        ok_y = int(EKRAN_YUKSEKLIK - 18)
         # Ok uzunluğu rüzgar şiddetiyle orantılı
         uzunluk = int(self.siddet * 15)
+        # Ekran sınırları içinde tut (clamp)
+        uzunluk = max(-(EKRAN_GENISLIK // 2 - 20), min(EKRAN_GENISLIK // 2 - 20, uzunluk))
         if abs(uzunluk) > 3:
             renk = ACIK_MAVI
-            pygame.draw.line(ekran, renk, (ok_x, ok_y), (ok_x + uzunluk, ok_y), 2)
+            end_x = int(ok_x + uzunluk)
+            end_x = max(0, min(EKRAN_GENISLIK, end_x))
+            pygame.draw.line(ekran, renk, (int(ok_x), int(ok_y)), (int(end_x), int(ok_y)), 2)
             yon = 1 if uzunluk > 0 else -1
             pygame.draw.polygon(ekran, renk, [
-                (ok_x + uzunluk, ok_y),
-                (ok_x + uzunluk - yon * 6, ok_y - 4),
-                (ok_x + uzunluk - yon * 6, ok_y + 4)])
+                (int(end_x), int(ok_y)),
+                (int(end_x - yon * 6), int(ok_y - 4)),
+                (int(end_x - yon * 6), int(ok_y + 4))])
         txt = font.render(f"Rüzgar: {self.siddet:+.1f}", True, ACIK_MAVI)
-        ekran.blit(txt, (ok_x - txt.get_width() // 2, ok_y - 16))
+        ekran.blit(txt, (int(ok_x - txt.get_width() // 2), int(ok_y - 16)))
 
 
 # =============================================================================
@@ -474,9 +808,35 @@ class FallingItem:
     def guncelle(self, ruzgar_siddet=0, yercekim_carpan=1.0):
         """Nesneyi her karede aşağı doğru hareket ettirir (rüzgar + yerçekimi)."""
         self.y += self.hiz * yercekim_carpan
-        self.x += ruzgar_siddet * 0.5
-        # Ekran sınırlarını aşmasın
-        self.x = max(0, min(EKRAN_GENISLIK - self.genislik, self.x))
+
+        # Rüzgar güvenlik kontrolü
+        if ruzgar_siddet is None:
+            ruzgar_siddet = 0
+        ruzgar_siddet = float(ruzgar_siddet)
+
+        # Yatay hız hesapla: rüzgar çarpanı 0.25'e düşürüldü (eski: 0.5)
+        x_hizi = ruzgar_siddet * 0.25
+
+        # Velocity clamping: yatay hız asla ±5'i geçemez
+        x_hizi = max(-5.0, min(5.0, x_hizi))
+
+        # Kenar sönümleme: nesne kenara yaklaştıkça rüzgar etkisi azalır
+        kenar_esik = 80.0
+        kenar_mesafe_sol = max(0.0, self.x)
+        kenar_mesafe_sag = max(0.0, EKRAN_GENISLIK - self.genislik - self.x)
+        if x_hizi < 0 and kenar_mesafe_sol < kenar_esik:
+            x_hizi *= kenar_mesafe_sol / kenar_esik
+        elif x_hizi > 0 and kenar_mesafe_sag < kenar_esik:
+            x_hizi *= kenar_mesafe_sag / kenar_esik
+
+        self.x += x_hizi
+
+        # Ekran sınırı: taşarsa geri it ve hızı sıfırla
+        if self.x < 0:
+            self.x = 0
+        elif self.x > EKRAN_GENISLIK - self.genislik:
+            self.x = EKRAN_GENISLIK - self.genislik
+
         # Ekranın altına ulaştıysa pasif yap
         if self.y > EKRAN_YUKSEKLIK:
             self.aktif = False
@@ -795,12 +1155,13 @@ class TakipBomba(FallingItem):
         self._sayac = 0
 
     def guncelle(self, sepet_x=None):
-        """Sepetin X pozisyonuna doğru hafifçe kayar."""
+        """Sepetin X pozisyonuna doğru hafifçe kayar (düşük lerp)."""
         self._sayac += 1
         self.y += self.hiz
         if sepet_x is not None:
             fark = sepet_x - self.x
-            self.x += max(-1.5, min(1.5, fark * 0.02))
+            # Düşük lerp hızı (0.008) ve sınırlı maksimum kayma (0.8 px/kare)
+            self.x += max(-0.8, min(0.8, fark * 0.008))
         self.x = max(0, min(EKRAN_GENISLIK - self.genislik, self.x))
         if self.y > EKRAN_YUKSEKLIK:
             self.aktif = False
@@ -1080,6 +1441,15 @@ class SkorVeritabani:
                         seviye INTEGER DEFAULT 0
                     )
                 """)
+                # Ghost (Hayalet Sepet) veri tablosu
+                bag.execute("""
+                    CREATE TABLE IF NOT EXISTS ghost_data (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        skor INTEGER NOT NULL,
+                        hareketler TEXT NOT NULL,
+                        tarih TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
                 bag.commit()
         except sqlite3.Error as e:
             print(f"[UYARI] Veritabanı tablosu oluşturulamadı: {e}")
@@ -1300,6 +1670,41 @@ class SkorVeritabani:
             sonuc[uid] = self.upgrade_seviye_al(uid)
         return sonuc
 
+    # --- Ghost (Hayalet Sepet) metotları ---
+    def ghost_kaydet(self, skor, hareketler_json):
+        """En yüksek skorlu oyunun ghost verisini kaydeder."""
+        try:
+            with sqlite3.connect(self.db_yolu) as bag:
+                # Sadece en yüksek skoru sakla (eski veriyi sil)
+                mevcut = bag.execute("SELECT MAX(skor) FROM ghost_data").fetchone()[0]
+                if mevcut is None or skor >= mevcut:
+                    bag.execute("DELETE FROM ghost_data")
+                    bag.execute(
+                        "INSERT INTO ghost_data (skor, hareketler) VALUES (?, ?)",
+                        (skor, hareketler_json)
+                    )
+                    bag.commit()
+                    return True
+            return False
+        except sqlite3.Error as e:
+            print(f"[UYARI] Ghost verisi kaydedilemedi: {e}")
+            return False
+
+    def ghost_yukle(self):
+        """En yüksek skorlu ghost verisini döndürür."""
+        try:
+            with sqlite3.connect(self.db_yolu) as bag:
+                cursor = bag.execute(
+                    "SELECT skor, hareketler FROM ghost_data ORDER BY skor DESC LIMIT 1"
+                )
+                sonuc = cursor.fetchone()
+                if sonuc:
+                    return {"skor": sonuc[0], "hareketler": sonuc[1]}
+            return None
+        except sqlite3.Error as e:
+            print(f"[UYARI] Ghost verisi yüklenemedi: {e}")
+            return None
+
 
 # =============================================================================
 # SINIF: GameManager (Oyun Yöneticisi)
@@ -1362,6 +1767,9 @@ class GameManager:
         self.dag_img = None
         try:
             gorsel_klasoru = os.path.join(OYUN_KLASORU, "assets", "images")
+            # Yedek yol: assets/sounds/images (görseller oradaysa)
+            if not os.path.isdir(gorsel_klasoru):
+                gorsel_klasoru = os.path.join(OYUN_KLASORU, "assets", "sounds", "images")
 
             gorsel_haritasi = {
                 "sepet": ("sepet.png", (100, 50)),
@@ -1455,6 +1863,8 @@ class GameManager:
         self.bolge_gorselleri = {}
         try:
             gorsel_klasoru = os.path.join(OYUN_KLASORU, "assets", "images")
+            if not os.path.isdir(gorsel_klasoru):
+                gorsel_klasoru = os.path.join(OYUN_KLASORU, "assets", "sounds", "images")
             for i, bolge in enumerate(BOLGE_TANIMLARI):
                 yol = os.path.join(gorsel_klasoru, bolge["dosya"])
                 if os.path.exists(yol):
@@ -1468,7 +1878,32 @@ class GameManager:
         self.hirsiz_kuslar = []
         self.hirsiz_kus_zamanlayici = 0
 
+        # --- Replay (Tekrar İzleme) Sistemi ---
+        self.replay = ReplaySystem()
+
+        # --- Ghost (Hayalet Sepet) Sistemi ---
+        self.ghost = GhostSepet()
+        self.ghost_kayit = []  # Mevcut oyundaki sepet hareketlerini kaydet
+        self._ghost_yukle()
+
+        # --- Dinamik Zorluk Motoru ---
+        self.zorluk_motoru = DinamikZorlukMotoru()
+
+        # --- Global API Yöneticisi ---
+        self.api_yoneticisi = None  # Veritabanı hazır olduktan sonra oluşturulur
+
         self._oyunu_sifirla()
+
+    # -------------------------------------------------------------------------
+    # Ghost Veri Yükleme
+    # -------------------------------------------------------------------------
+    def _ghost_yukle(self):
+        """Veritabanından en yüksek skorun ghost verisini yükler."""
+        veri = self.veritabani.ghost_yukle()
+        if veri:
+            self.ghost = GhostSepet.json_den_yukle(veri["hareketler"])
+        else:
+            self.ghost = GhostSepet()
 
     # -------------------------------------------------------------------------
     # Oyun Durumu Yönetimi
@@ -1542,6 +1977,19 @@ class GameManager:
         self.can = MAKS_CAN + can_bonus
         self.miknatıs_bonus = upgrades.get("miknatıs_sure", 0)  # İleride kullanılabilir
 
+        # Replay sistemi sıfırla
+        self.replay.sifirla()
+
+        # Ghost kayıt sıfırla (yeni oyun başlıyor)
+        self.ghost_kayit = []
+        self._ghost_yukle()
+
+        # Dinamik zorluk motoru sıfırla
+        self.zorluk_motoru.sifirla()
+
+        # API yöneticisini oluştur
+        self.api_yoneticisi = SkorAPIYoneticisi(self.veritabani)
+
     # -------------------------------------------------------------------------
     # Nesne Üretimi
     # -------------------------------------------------------------------------
@@ -1556,7 +2004,7 @@ class GameManager:
             self.boss_mermi_zamanlayici += 1
             if self.boss_mermi_zamanlayici >= 40:
                 self.boss_mermi_zamanlayici = 0
-                x = random.randint(20, EKRAN_GENISLIK - 54)
+                x = random.randint(50, EKRAN_GENISLIK - 50)
                 hiz = self.temel_hiz + 0.5
                 self.dusen_nesneler.append(MermiItem(x, hiz))
             return
@@ -1565,9 +2013,12 @@ class GameManager:
         if self.nesne_zamanlayici >= self.nesne_bekleme:
             self.nesne_zamanlayici = 0
 
-            x = random.randint(20, EKRAN_GENISLIK - 54)
+            # Nesneler kenarlardan 50 px uzakta doğar
+            x = random.randint(50, EKRAN_GENISLIK - 50)
             hiz = self.temel_hiz + (self.zorluk_seviyesi - 1) * 0.5
             hiz += random.uniform(-0.3, 0.5)
+            # Dinamik zorluk motoru hız düzeltmesi
+            hiz = self.zorluk_motoru.hiz_al(hiz)
 
             if self.fever_aktif:
                 # Fever modunda sadece altın elma
@@ -1628,6 +2079,7 @@ class GameManager:
             if nesne.y > EKRAN_YUKSEKLIK and isinstance(nesne, (GoodItem, GoldenItem)):
                 self.kombo_sayac = 0
                 self.kombo_carpan = 1
+                self.zorluk_motoru.nesne_kacirildi()
                 continue
 
             if sepet_rect.colliderect(nesne.dikdortgen_al()):
@@ -1653,6 +2105,7 @@ class GameManager:
                     self.parcacik_yonetici.patlama_ekle(px, py, ALTIN, 25)
                     self.sepet.squash_baslat()
                     self._kombo_artir()
+                    self.zorluk_motoru.nesne_yakalandi()
 
                 elif isinstance(nesne, HealItem):
                     if self.can < MAKS_CAN:
@@ -1667,6 +2120,7 @@ class GameManager:
                     self.parcacik_yonetici.patlama_ekle(px, py, YESIL, 15)
                     self.sepet.squash_baslat()
                     self._kombo_artir()
+                    self.zorluk_motoru.nesne_yakalandi()
 
                 elif isinstance(nesne, (BadItem, BossBomba, TakipBomba)):
                     eski_can = self.can
@@ -1917,6 +2371,20 @@ class GameManager:
         bolge_isim = BOLGE_TANIMLARI[bolge_idx]["isim"]
         bolge_txt = self.mini_font.render(f"🌍 {bolge_isim}", True, BEYAZ)
         ekran.blit(bolge_txt, (EKRAN_GENISLIK - bolge_txt.get_width() - 10, 48))
+
+        # Dinamik Zorluk Göstergesi
+        kacirma = self.zorluk_motoru.kacirma_orani
+        if kacirma > 0.50:
+            zorluk_renk = ACIK_YESIL
+            zorluk_etiket = "Kolay"
+        elif kacirma < 0.20:
+            zorluk_renk = KIRMIZI
+            zorluk_etiket = "Zor"
+        else:
+            zorluk_renk = SARI
+            zorluk_etiket = "Normal"
+        dz_txt = self.mini_font.render(f"⚙ {zorluk_etiket} ({kacirma:.0%})", True, zorluk_renk)
+        ekran.blit(dz_txt, (10, 65))
 
     # -------------------------------------------------------------------------
     # Ana Menü Ekranı
@@ -2241,11 +2709,28 @@ class GameManager:
                         (buton_rect.centerx - tekrar_yazi.get_width() // 2,
                          buton_rect.centery - tekrar_yazi.get_height() // 2))
 
-        # Çıkış ipucu
-        cikis = self.kucuk_font.render("ESC: Menüye Dön  |  ENTER: Tekrar Oyna", True, GRI)
-        self.ekran.blit(cikis, (EKRAN_GENISLIK // 2 - cikis.get_width() // 2, 450))
+        # Tekrar İzle butonu (Replay)
+        replay_rect = pygame.Rect(EKRAN_GENISLIK // 2 - 130, 440, 260, 42)
+        replay_var = len(self.replay.kareler) > 0
+        if replay_var:
+            if replay_rect.collidepoint(fare):
+                pygame.draw.rect(self.ekran, TURUNCU, replay_rect, border_radius=10)
+            else:
+                pygame.draw.rect(self.ekran, (160, 100, 20), replay_rect, border_radius=10)
+            pygame.draw.rect(self.ekran, BEYAZ, replay_rect, 2, border_radius=10)
+            replay_yazi = self.orta_font.render("▶ Tekrar İzle", True, BEYAZ)
+        else:
+            pygame.draw.rect(self.ekran, KOYU_GRI, replay_rect, border_radius=10)
+            replay_yazi = self.orta_font.render("▶ Tekrar İzle", True, GRI)
+        self.ekran.blit(replay_yazi,
+                        (replay_rect.centerx - replay_yazi.get_width() // 2,
+                         replay_rect.centery - replay_yazi.get_height() // 2))
 
-        return buton_rect
+        # Çıkış ipucu
+        cikis = self.kucuk_font.render("ESC: Menüye Dön  |  ENTER: Tekrar Oyna  |  R: İzle", True, GRI)
+        self.ekran.blit(cikis, (EKRAN_GENISLIK // 2 - cikis.get_width() // 2, 495))
+
+        return buton_rect, replay_rect
 
     # -------------------------------------------------------------------------
     # İsim Giriş Ekranı (Top 5'e Girenler İçin)
@@ -2290,6 +2775,90 @@ class GameManager:
         self.ekran.blit(ipucu, (EKRAN_GENISLIK // 2 - ipucu.get_width() // 2, 380))
 
     # -------------------------------------------------------------------------
+    # Tekrar İzleme (Replay) Ekranı
+    # -------------------------------------------------------------------------
+    def _replay_ciz(self):
+        """Kaydedilmiş oyun karelerini tekrar izleme modunda canlandırır.
+        Yeni nesne üretmez — yalnızca kaydedilen kareleri oynatır."""
+        kare = self.replay.sonraki_kare()
+        if kare is None:
+            self.durum = "bitti"
+            return
+
+        self._arkaplan_ciz()
+
+        # Zemin (oyun alanı altta kalacak şekilde)
+        zemin_y = EKRAN_YUKSEKLIK - 30
+        pygame.draw.rect(self.ekran, KOYU_YESIL, (0, zemin_y, EKRAN_GENISLIK, 30))
+        pygame.draw.rect(self.ekran, YESIL, (0, zemin_y, EKRAN_GENISLIK, 5))
+
+        # Düşen nesneleri çiz (sadece kaydedilen pozisyonlardan, yeni nesne yok)
+        nesne_renkleri = {
+            "GoodItem": KIRMIZI,
+            "BadItem": SIYAH,
+            "GoldenItem": ALTIN,
+            "HealItem": ACIK_YESIL,
+            "TakipBomba": PEMBE,
+            "MermiItem": ACIK_MAVI,
+            "BossBomba": TURUNCU,
+        }
+        for (nx, ny, nw, nh, tip) in kare.nesneler:
+            renk = nesne_renkleri.get(tip, GRI)
+            merkez_x = int(nx + nw // 2)
+            merkez_y = int(ny + nh // 2)
+            yaricap = nw // 2
+            if tip in ("GoodItem", "GoldenItem"):
+                pygame.draw.circle(self.ekran, renk, (merkez_x, merkez_y), yaricap)
+                pygame.draw.circle(self.ekran, (255, 255, 255), (merkez_x - 3, merkez_y - 3), yaricap // 4)
+            elif tip in ("BadItem", "BossBomba", "TakipBomba"):
+                pygame.draw.circle(self.ekran, KOYU_GRI, (merkez_x, merkez_y), yaricap)
+                pygame.draw.circle(self.ekran, renk, (merkez_x, merkez_y), yaricap - 2)
+            else:
+                pygame.draw.circle(self.ekran, renk, (merkez_x, merkez_y), yaricap)
+
+        # Sepetin pozisyonu (kaydedilen X ile)
+        sepet_y = EKRAN_YUKSEKLIK - 70
+        sepet_w = 100
+        sepet_h = 50
+        sepet_x = kare.sepet_x
+
+        # Sepet çizimi (basit geometrik)
+        govde = pygame.Rect(sepet_x, sepet_y + 10, sepet_w, sepet_h - 10)
+        pygame.draw.rect(self.ekran, KAHVERENGI, govde, border_radius=6)
+        ic = pygame.Rect(sepet_x + 5, sepet_y + 14, sepet_w - 10, sepet_h - 20)
+        pygame.draw.rect(self.ekran, (180, 120, 60), ic, border_radius=4)
+        pygame.draw.line(self.ekran, (100, 60, 20),
+                         (sepet_x - 8, sepet_y + 10),
+                         (sepet_x + sepet_w + 8, sepet_y + 10), 3)
+
+        # --- Replay HUD (alt kısımda, oyun alanına binmez) ---
+        # Alt bilgi paneli (zemin üstünde)
+        alt_panel_h = 38
+        alt_panel_y = EKRAN_YUKSEKLIK - alt_panel_h
+        alt_panel = pygame.Surface((EKRAN_GENISLIK, alt_panel_h), pygame.SRCALPHA)
+        alt_panel.fill((0, 0, 0, 180))
+        self.ekran.blit(alt_panel, (0, alt_panel_y))
+
+        # Replay etiketi (sol)
+        replay_txt = self.orta_font.render("▶ TEKRAR İZLEME", True, TURUNCU)
+        self.ekran.blit(replay_txt, (10, alt_panel_y + 6))
+
+        # Skor ve can bilgisi (orta)
+        skor_txt = self.kucuk_font.render(f"Skor: {kare.skor}  |  Can: {kare.can}", True, BEYAZ)
+        self.ekran.blit(skor_txt, (EKRAN_GENISLIK // 2 - skor_txt.get_width() // 2, alt_panel_y + 10))
+
+        # ESC ipucu (sağ)
+        ipucu = self.mini_font.render("ESC: Geri Dön", True, GRI)
+        self.ekran.blit(ipucu, (EKRAN_GENISLIK - ipucu.get_width() - 10, alt_panel_y + 12))
+
+        # İlerleme barı (en altta ince çubuk)
+        if len(self.replay.kareler) > 0:
+            ilerleme = self.replay.oynatma_indeks / len(self.replay.kareler)
+            bar_y = EKRAN_YUKSEKLIK - 4
+            pygame.draw.rect(self.ekran, KOYU_GRI, (0, bar_y, EKRAN_GENISLIK, 4))
+            pygame.draw.rect(self.ekran, TURUNCU, (0, bar_y, int(EKRAN_GENISLIK * ilerleme), 4))
+
+    # -------------------------------------------------------------------------
     # Ana Oyun Döngüsü
     # -------------------------------------------------------------------------
     def calistir(self):
@@ -2321,8 +2890,9 @@ class GameManager:
                     else:
                         # --- Diğer durumlar ---
                         if olay.key == pygame.K_ESCAPE:
-                            if self.durum in ("oyun", "bitti", "market", "upgrade"):
+                            if self.durum in ("oyun", "bitti", "market", "upgrade", "replay"):
                                 self.durum = "menu"
+                                self.replay.oynatma_durdur()
                             else:
                                 calisiyor = False
 
@@ -2333,6 +2903,11 @@ class GameManager:
                             elif self.durum == "bitti":
                                 self._oyunu_sifirla()
                                 self.durum = "oyun"
+
+                        if olay.key == pygame.K_r and self.durum == "bitti":
+                            if len(self.replay.kareler) > 0:
+                                self.replay.oynatma_baslat()
+                                self.durum = "replay"
 
                         if olay.key == pygame.K_m and self.durum == "menu":
                             self.durum = "market"
@@ -2354,9 +2929,13 @@ class GameManager:
                             self.durum = "upgrade"
                     elif self.durum == "bitti":
                         buton = pygame.Rect(EKRAN_GENISLIK // 2 - 130, 380, 260, 50)
+                        replay_buton = pygame.Rect(EKRAN_GENISLIK // 2 - 130, 440, 260, 42)
                         if buton.collidepoint(olay.pos):
                             self._oyunu_sifirla()
                             self.durum = "oyun"
+                        elif replay_buton.collidepoint(olay.pos) and len(self.replay.kareler) > 0:
+                            self.replay.oynatma_baslat()
+                            self.durum = "replay"
                     elif self.durum == "market":
                         buton_rects, geri_rect = self._market_ciz()
                         if geri_rect.collidepoint(olay.pos):
@@ -2400,6 +2979,9 @@ class GameManager:
             elif self.durum == "upgrade":
                 self._upgrade_ciz()
 
+            elif self.durum == "replay":
+                self._replay_ciz()
+
             pygame.display.flip()
             self.saat.tick(FPS)
 
@@ -2420,6 +3002,13 @@ class GameManager:
         # --- Rüzgar ve yağmur güncelle ---
         self.ruzgar.guncelle()
         self.yagmur.guncelle()
+
+        # --- Dinamik zorluk motoru güncelle ---
+        self.zorluk_motoru.guncelle()
+        # Rüzgar hedefini dinamik zorluk motoruyla düzelt (±3 sınırı)
+        hedef_duzeltilmis = self.zorluk_motoru.ruzgar_siddeti_al(self.ruzgar.hedef)
+        if hedef_duzeltilmis is not None:
+            self.ruzgar.hedef = max(-3.0, min(3.0, float(hedef_duzeltilmis)))
 
         # --- Bölge (Biome) güncelle (her 2000 puanda değişir, fade geçiş) ---
         yeni_bolge = min(len(BOLGE_TANIMLARI) - 1, self.skor // 2000)
@@ -2468,6 +3057,15 @@ class GameManager:
 
         # Zorluğu ayarla
         self._zorluk_ayarla()
+
+        # --- Replay kaydı: her kareyi kaydet ---
+        self.replay.kare_kaydet(
+            self.sepet, self.dusen_nesneler,
+            self.skor, self.can, self.kombo_sayac, self.fever_aktif
+        )
+
+        # --- Ghost kayıt: sepet X pozisyonunu kaydet ---
+        self.ghost_kayit.append((self.toplam_kare, self.sepet.x))
 
         # Parçacıkları güncelle
         self.parcacik_yonetici.guncelle()
@@ -2554,6 +3152,31 @@ class GameManager:
             # Kazanılan skoru bakiyeye ekle
             if self.son_skor > 0:
                 self.veritabani.bakiye_guncelle(self.son_skor)
+
+            # --- Ghost verisini kaydet (rekor ise) ---
+            if self.son_skor > 0:
+                ghost_temp = GhostSepet()
+                ghost_temp.hareketler = self.ghost_kayit
+                ghost_json = ghost_temp.veriyi_json_al()
+                self.veritabani.ghost_kaydet(self.son_skor, ghost_json)
+
+            # --- API'ye skor gönder ---
+            if self.api_yoneticisi and self.son_skor > 0:
+                sure_saniye = self.toplam_kare / FPS
+                skor_veri = self.api_yoneticisi.skor_json_olustur(
+                    isim="Oyuncu",
+                    skor=self.son_skor,
+                    seviye=self.zorluk_seviyesi,
+                    sure_saniye=sure_saniye,
+                    ekstra={
+                        "toplanan_elma": self.toplanan_elma_sayisi,
+                        "toplanan_altin": self.toplanan_altin_sayisi,
+                        "kacirma_orani": round(self.zorluk_motoru.kacirma_orani, 3),
+                    }
+                )
+                self.api_yoneticisi.api_ye_gonder(skor_veri)
+                self.api_yoneticisi.json_dosyaya_aktar()
+
             # Skor ilk 5'e giriyorsa isim sor
             if self.son_skor > 0 and self.veritabani.ilk_5e_girer_mi(self.son_skor):
                 self.durum = "isim_gir"
@@ -2585,6 +3208,14 @@ class GameManager:
 
         # Sepet
         self.sepet.ciz(hedef)
+
+        # --- Ghost (Hayalet) Sepet ---
+        if self.ghost.aktif:
+            self.ghost.ciz(
+                hedef, self.toplam_kare,
+                self.sepet.base_genislik, self.sepet.base_yukseklik,
+                self.sepet.y
+            )
 
         # Hırsız kuşlar
         for kus in self.hirsiz_kuslar:
