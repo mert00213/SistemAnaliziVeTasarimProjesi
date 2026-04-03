@@ -64,6 +64,25 @@ GOREV_TANIMLARI = {
 }
 KOYU_KIRMIZI = (140, 20, 30)
 
+# Geliştirme (Upgrade) tanımları
+UPGRADE_TANIMLARI = {
+    "sepet_hizi":    {"isim": "Sepet Hızı",     "maks_seviye": 5, "baz_fiyat": 300,  "artis": 200},
+    "miknatıs_sure": {"isim": "Mıknatıs Süresi", "maks_seviye": 5, "baz_fiyat": 400,  "artis": 250},
+    "ekstra_can":    {"isim": "Ekstra Can",      "maks_seviye": 3, "baz_fiyat": 600,  "artis": 400},
+}
+
+# Bölge (Biome) tanımları
+BOLGE_TANIMLARI = [
+    {"isim": "Orman",  "dosya": "orman.png",  "yercekim": 1.0, "zemin": KOYU_YESIL,  "cimen": YESIL,
+     "gokyuzu": (30, 100, 30)},
+    {"isim": "Çöl",    "dosya": "col.png",    "yercekim": 1.15, "zemin": (180, 140, 60), "cimen": (200, 170, 80),
+     "gokyuzu": (100, 70, 20)},
+    {"isim": "Buz",    "dosya": "buz.png",    "yercekim": 0.95, "zemin": (180, 200, 220), "cimen": (200, 220, 240),
+     "gokyuzu": (40, 60, 100)},
+    {"isim": "Uzay",   "dosya": "uzay.png",   "yercekim": 0.6,  "zemin": (40, 20, 60),   "cimen": (60, 30, 80),
+     "gokyuzu": (5, 5, 20)},
+]
+
 
 # =============================================================================
 # SINIF: ParalaksKatman (Paralaks Arka Plan Katmanı)
@@ -271,6 +290,94 @@ class GorevBildirimi:
 
 
 # =============================================================================
+# SINIF: RuzgarSistemi (Wind System)
+# =============================================================================
+class RuzgarSistemi:
+    """Rastgele yön değiştiren rüzgar sistemi."""
+
+    def __init__(self):
+        self.siddet = 0.0       # -3.0 .. +3.0  (negatif=sol, pozitif=sağ)
+        self.hedef = 0.0
+        self.degisim_sayaci = 0
+        self.degisim_araliği = 180  # ~3 sn
+
+    def guncelle(self):
+        self.degisim_sayaci += 1
+        if self.degisim_sayaci >= self.degisim_araliği:
+            self.degisim_sayaci = 0
+            self.hedef = random.uniform(-3.0, 3.0)
+            self.degisim_araliği = random.randint(120, 300)
+        # Yumuşak geçiş
+        self.siddet += (self.hedef - self.siddet) * 0.02
+
+    def ciz(self, ekran, font):
+        """Rüzgar ok göstergesini çizer."""
+        ok_x = EKRAN_GENISLIK // 2
+        ok_y = EKRAN_YUKSEKLIK - 18
+        # Ok uzunluğu rüzgar şiddetiyle orantılı
+        uzunluk = int(self.siddet * 15)
+        if abs(uzunluk) > 3:
+            renk = ACIK_MAVI
+            pygame.draw.line(ekran, renk, (ok_x, ok_y), (ok_x + uzunluk, ok_y), 2)
+            yon = 1 if uzunluk > 0 else -1
+            pygame.draw.polygon(ekran, renk, [
+                (ok_x + uzunluk, ok_y),
+                (ok_x + uzunluk - yon * 6, ok_y - 4),
+                (ok_x + uzunluk - yon * 6, ok_y + 4)])
+        txt = font.render(f"Rüzgar: {self.siddet:+.1f}", True, ACIK_MAVI)
+        ekran.blit(txt, (ok_x - txt.get_width() // 2, ok_y - 16))
+
+
+# =============================================================================
+# SINIF: YagmurSistemi (Rain Effect)
+# =============================================================================
+class YagmurSistemi:
+    """Yağmur parçacık efekti ve kaygan zemin kontrolü."""
+
+    def __init__(self):
+        self.aktif = False
+        self.damlalar = []
+        self.zamanlayici = 0
+        self.sure = 0          # Yağmur kalan kare
+        self.bekleme = 0       # Sonraki yağmura kalan kare
+
+    def guncelle(self):
+        self.zamanlayici += 1
+        if not self.aktif:
+            self.bekleme -= 1
+            if self.bekleme <= 0:
+                self.aktif = True
+                self.sure = random.randint(600, 1200)  # 10-20 sn
+                self.bekleme = 0
+        else:
+            self.sure -= 1
+            if self.sure <= 0:
+                self.aktif = False
+                self.bekleme = random.randint(900, 1800)  # 15-30 sn
+            # Yeni damla ekle (optimize: max 60)
+            if len(self.damlalar) < 60:
+                self.damlalar.append([
+                    random.randint(0, EKRAN_GENISLIK),
+                    random.randint(-20, 0),
+                    random.uniform(6, 10)])
+        # Damlaları güncelle
+        yeni = []
+        for d in self.damlalar:
+            d[1] += d[2]
+            if d[1] < EKRAN_YUKSEKLIK:
+                yeni.append(d)
+        self.damlalar = yeni
+
+    def ciz(self, ekran):
+        if not self.aktif:
+            return
+        for d in self.damlalar:
+            pygame.draw.line(ekran, (120, 160, 220),
+                             (int(d[0]), int(d[1])),
+                             (int(d[0]) - 1, int(d[1]) + 6), 1)
+
+
+# =============================================================================
 # SINIF: Particle (Parçacık Efekti)
 # =============================================================================
 class Particle:
@@ -351,9 +458,12 @@ class FallingItem:
         self.renk = renk
         self.aktif = True  # Nesne ekranda mı?
 
-    def guncelle(self):
-        """Nesneyi her karede aşağı doğru hareket ettirir."""
-        self.y += self.hiz
+    def guncelle(self, ruzgar_siddet=0, yercekim_carpan=1.0):
+        """Nesneyi her karede aşağı doğru hareket ettirir (rüzgar + yerçekimi)."""
+        self.y += self.hiz * yercekim_carpan
+        self.x += ruzgar_siddet * 0.5
+        # Ekran sınırlarını aşmasın
+        self.x = max(0, min(EKRAN_GENISLIK - self.genislik, self.x))
         # Ekranın altına ulaştıysa pasif yap
         if self.y > EKRAN_YUKSEKLIK:
             self.aktif = False
@@ -456,9 +566,9 @@ class GoldenItem(FallingItem):
         self.puan = 100
         self._parlama_sayac = 0
 
-    def guncelle(self):
+    def guncelle(self, ruzgar_siddet=0, yercekim_carpan=1.0):
         """Altın elmayı hareket ettirir ve parlama sayacını artırır."""
-        super().guncelle()
+        super().guncelle(ruzgar_siddet, yercekim_carpan)
         self._parlama_sayac += 1
 
     def ciz(self, ekran):
@@ -496,9 +606,9 @@ class HealItem(FallingItem):
         super().__init__(x, -40, 30, 30, hiz * 0.8, ACIK_YESIL)
         self._parlama_sayac = 0
 
-    def guncelle(self):
+    def guncelle(self, ruzgar_siddet=0, yercekim_carpan=1.0):
         """Can paketini hareket ettirir ve parlama sayacını artırır."""
-        super().guncelle()
+        super().guncelle(ruzgar_siddet, yercekim_carpan)
         self._parlama_sayac += 1
 
     def ciz(self, ekran):
@@ -616,7 +726,7 @@ class BossBomba(FallingItem):
         self.vy = dy / uzunluk * 4.5
         self._sayac = 0
 
-    def guncelle(self):
+    def guncelle(self, ruzgar_siddet=0, yercekim_carpan=1.0):
         self.x += self.vx
         self.y += self.vy
         self._sayac += 1
@@ -645,8 +755,8 @@ class MermiItem(FallingItem):
         super().__init__(x, -30, 24, 24, hiz, ACIK_MAVI)
         self._sayac = 0
 
-    def guncelle(self):
-        super().guncelle()
+    def guncelle(self, ruzgar_siddet=0, yercekim_carpan=1.0):
+        super().guncelle(ruzgar_siddet, yercekim_carpan)
         self._sayac += 1
 
     def ciz(self, ekran):
@@ -658,6 +768,119 @@ class MermiItem(FallingItem):
         pygame.draw.circle(ekran, ACIK_MAVI, (cx, cy), 5)
         pygame.draw.polygon(ekran, BEYAZ, [
             (cx - 3, cy + 2), (cx, cy - 5), (cx + 3, cy + 2)])
+
+
+# =============================================================================
+# SINIF: TakipBomba (Homing Bomb - Güdümlü Bomba)
+# =============================================================================
+class TakipBomba(FallingItem):
+    """Düşerken sepetin X konumuna doğru hafifçe yönelen bomba."""
+
+    def __init__(self, x, hiz, gorsel=None):
+        super().__init__(x, -40, 30, 30, hiz * 0.85, PEMBE)
+        self.gorsel = gorsel
+        self._sayac = 0
+
+    def guncelle(self, sepet_x=None):
+        """Sepetin X pozisyonuna doğru hafifçe kayar."""
+        self._sayac += 1
+        self.y += self.hiz
+        if sepet_x is not None:
+            fark = sepet_x - self.x
+            self.x += max(-1.5, min(1.5, fark * 0.02))
+        self.x = max(0, min(EKRAN_GENISLIK - self.genislik, self.x))
+        if self.y > EKRAN_YUKSEKLIK:
+            self.aktif = False
+
+    def ciz(self, ekran):
+        cx = int(self.x + self.genislik // 2)
+        cy = int(self.y + self.yukseklik // 2)
+        r = self.genislik // 2
+        parlama = abs(math.sin(self._sayac * 0.12)) * 3
+        pygame.draw.circle(ekran, (200, 50, 100), (cx, cy), int(r + parlama))
+        pygame.draw.circle(ekran, PEMBE, (cx, cy), r - 2)
+        pygame.draw.circle(ekran, BEYAZ, (cx - 3, cy - 3), 4)
+        # Hedef simgesi
+        pygame.draw.line(ekran, KIRMIZI, (cx - 6, cy), (cx + 6, cy), 2)
+        pygame.draw.line(ekran, KIRMIZI, (cx, cy - 6), (cx, cy + 6), 2)
+
+
+# =============================================================================
+# SINIF: HirsizKus (Thief Bird - Elma Çalan Kuş)
+# =============================================================================
+class HirsizKus:
+    """Yandan uçarak gelen ve düşen elmaları kapmaya çalışan kuş."""
+
+    def __init__(self):
+        self.genislik = 28
+        self.yukseklik = 20
+        if random.random() < 0.5:
+            self.x = float(-self.genislik)
+            self.vx = random.uniform(2.0, 3.5)
+        else:
+            self.x = float(EKRAN_GENISLIK)
+            self.vx = random.uniform(-3.5, -2.0)
+        self.y = float(random.randint(60, EKRAN_YUKSEKLIK // 2))
+        self.aktif = True
+        self._kanat = 0
+        self.hedef_elma = None
+
+    def guncelle(self, dusen_nesneler):
+        self._kanat += 1
+        self.x += self.vx
+        # Ekrandan çıktıysa kaldır
+        if self.x < -80 or self.x > EKRAN_GENISLIK + 80:
+            self.aktif = False
+            return
+        # En yakın elmayı hedefle
+        min_dist = 999999
+        en_yakin = None
+        for nesne in dusen_nesneler:
+            if isinstance(nesne, (GoodItem, GoldenItem)) and nesne.aktif:
+                dist = abs(nesne.x - self.x) + abs(nesne.y - self.y)
+                if dist < min_dist:
+                    min_dist = dist
+                    en_yakin = nesne
+        self.hedef_elma = en_yakin
+        if self.hedef_elma and self.hedef_elma.aktif:
+            # Dikey olarak elmaya doğru hafifçe yaklaş
+            fark_y = self.hedef_elma.y - self.y
+            self.y += max(-2.0, min(2.0, fark_y * 0.04))
+            # Yatay olarak da hafifçe yaklaş
+            fark_x = self.hedef_elma.x - self.x
+            self.x += max(-1.0, min(1.0, fark_x * 0.03))
+            # Elmaya yeterince yakınsa kap
+            if abs(self.x - self.hedef_elma.x) < 20 and abs(self.y - self.hedef_elma.y) < 20:
+                self.hedef_elma.aktif = False
+                self.hedef_elma = None
+
+    def ciz(self, ekran):
+        if not self.aktif:
+            return
+        ix = int(self.x)
+        iy = int(self.y)
+        yon = 1 if self.vx > 0 else -1
+        # Gövde
+        pygame.draw.ellipse(ekran, (80, 60, 40), (ix, iy + 4, self.genislik, self.yukseklik - 6))
+        # Kanat
+        kanat_y = int(math.sin(self._kanat * 0.25) * 6)
+        pygame.draw.polygon(ekran, (100, 80, 50), [
+            (ix + 14, iy + 8),
+            (ix + 14 + yon * 10, iy + kanat_y),
+            (ix + 14 + yon * 4, iy + 10)])
+        # Gaga
+        gaga_x = ix + (self.genislik if yon > 0 else 0)
+        pygame.draw.polygon(ekran, SARI, [
+            (gaga_x, iy + 10),
+            (gaga_x + yon * 8, iy + 12),
+            (gaga_x, iy + 14)])
+        # Göz
+        goz_x = ix + (self.genislik - 6 if yon > 0 else 6)
+        pygame.draw.circle(ekran, BEYAZ, (goz_x, iy + 8), 3)
+        pygame.draw.circle(ekran, SIYAH, (goz_x, iy + 8), 1)
+
+    def dikdortgen_al(self):
+        return pygame.Rect(int(self.x), int(self.y), self.genislik, self.yukseklik)
 
 
 # =============================================================================
@@ -696,12 +919,22 @@ class Basket:
         self._ss_timer = 12
         self._ss_aktif = True
 
-    def hareket_et(self, tuslar):
+    def hareket_et(self, tuslar, kaygan_zemin=False):
         """Basılan tuşlara göre sepeti sağa veya sola hareket ettirir."""
-        if (tuslar[pygame.K_LEFT] or tuslar[pygame.K_a]) and self.x > 0:
-            self.x -= self.hiz
-        if (tuslar[pygame.K_RIGHT] or tuslar[pygame.K_d]) and self.x < EKRAN_GENISLIK - self.genislik:
-            self.x += self.hiz
+        if not hasattr(self, '_momentum'):
+            self._momentum = 0.0
+        hedef = 0.0
+        if tuslar[pygame.K_LEFT] or tuslar[pygame.K_a]:
+            hedef -= self.hiz
+        if tuslar[pygame.K_RIGHT] or tuslar[pygame.K_d]:
+            hedef += self.hiz
+        if kaygan_zemin:
+            # Yağmurda kaygan zemin: momentum tabanlı hareket
+            self._momentum += (hedef - self._momentum) * 0.12
+        else:
+            self._momentum = hedef
+        self.x += self._momentum
+        self.x = max(0, min(EKRAN_GENISLIK - self.genislik, self.x))
 
         # Squash-Stretch güncelle
         if self._ss_aktif:
@@ -825,6 +1058,13 @@ class SkorVeritabani:
                         gorev_id TEXT UNIQUE NOT NULL,
                         tamamlandi INTEGER DEFAULT 0,
                         tarih TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                # Upgrade (Yetenek) tablosu
+                bag.execute("""
+                    CREATE TABLE IF NOT EXISTS upgrades (
+                        upgrade_id TEXT PRIMARY KEY,
+                        seviye INTEGER DEFAULT 0
                     )
                 """)
                 bag.commit()
@@ -1002,6 +1242,51 @@ class SkorVeritabani:
         except sqlite3.Error:
             return []
 
+    # --- Upgrade (Yetenek) metotları ---
+    def upgrade_seviye_al(self, upgrade_id):
+        """Belirtilen upgrade'ın mevcut seviyesini döndürür."""
+        try:
+            with sqlite3.connect(self.db_yolu) as bag:
+                cursor = bag.execute(
+                    "SELECT seviye FROM upgrades WHERE upgrade_id = ?",
+                    (upgrade_id,)
+                )
+                sonuc = cursor.fetchone()
+                return sonuc[0] if sonuc else 0
+        except sqlite3.Error:
+            return 0
+
+    def upgrade_satin_al(self, upgrade_id):
+        """Upgrade seviyesini artırır. Başarılı ise True döndürür."""
+        tanim = UPGRADE_TANIMLARI.get(upgrade_id)
+        if not tanim:
+            return False
+        mevcut = self.upgrade_seviye_al(upgrade_id)
+        if mevcut >= tanim["maks_seviye"]:
+            return False
+        fiyat = tanim["baz_fiyat"] + mevcut * tanim["artis"]
+        bakiye = self.bakiye_al()
+        if bakiye < fiyat:
+            return False
+        try:
+            with sqlite3.connect(self.db_yolu) as bag:
+                bag.execute(
+                    "INSERT OR REPLACE INTO upgrades (upgrade_id, seviye) VALUES (?, ?)",
+                    (upgrade_id, mevcut + 1)
+                )
+                bag.commit()
+            self.bakiye_guncelle(-fiyat)
+            return True
+        except sqlite3.Error:
+            return False
+
+    def tum_upgradeler(self):
+        """Tüm upgrade'ların seviyelerini dict olarak döndürür."""
+        sonuc = {}
+        for uid in UPGRADE_TANIMLARI:
+            sonuc[uid] = self.upgrade_seviye_al(uid)
+        return sonuc
+
 
 # =============================================================================
 # SINIF: GameManager (Oyun Yöneticisi)
@@ -1063,7 +1348,7 @@ class GameManager:
         self.bulut_img = None
         self.dag_img = None
         try:
-            gorsel_klasoru = os.path.join(OYUN_KLASORU, "assets", "sounds", "images")
+            gorsel_klasoru = os.path.join(OYUN_KLASORU, "assets", "images")
 
             gorsel_haritasi = {
                 "sepet": ("sepet.png", (100, 50)),
@@ -1148,6 +1433,28 @@ class GameManager:
                            random.randint(0, EKRAN_YUKSEKLIK // 2),
                            random.randint(1, 3)) for _ in range(40)]
 
+        # --- Rüzgar ve Yağmur sistemleri ---
+        self.ruzgar = RuzgarSistemi()
+        self.yagmur = YagmurSistemi()
+
+        # --- Bölge (Biome) sistemi ---
+        self.aktif_bolge = 0
+        self.bolge_gorselleri = {}
+        try:
+            gorsel_klasoru = os.path.join(OYUN_KLASORU, "assets", "images")
+            for i, bolge in enumerate(BOLGE_TANIMLARI):
+                yol = os.path.join(gorsel_klasoru, bolge["dosya"])
+                if os.path.exists(yol):
+                    self.bolge_gorselleri[i] = pygame.transform.scale(
+                        pygame.image.load(yol).convert_alpha(),
+                        (EKRAN_GENISLIK, EKRAN_YUKSEKLIK))
+        except Exception as e:
+            print(f"[UYARI] Bölge görselleri yüklenemedi: {e}")
+
+        # --- Hırsız kuşlar ---
+        self.hirsiz_kuslar = []
+        self.hirsiz_kus_zamanlayici = 0
+
         self._oyunu_sifirla()
 
     # -------------------------------------------------------------------------
@@ -1199,6 +1506,24 @@ class GameManager:
         self.toplanan_altin_sayisi = 0
         self.hasar_alindi = False
 
+        # Rüzgar / yağmur / bölge sıfırla
+        self.ruzgar.siddet = 0.0
+        self.ruzgar.hedef = 0.0
+        self.yagmur.aktif = False
+        self.yagmur.damlalar.clear()
+        self.yagmur.bekleme = random.randint(600, 1200)
+        self.aktif_bolge = 0
+        self.hirsiz_kuslar = []
+        self.hirsiz_kus_zamanlayici = 0
+
+        # Upgrade'ları uygula
+        upgrades = self.veritabani.tum_upgradeler()
+        hiz_bonus = upgrades.get("sepet_hizi", 0)
+        self.sepet.hiz = 8 + hiz_bonus  # Her seviye +1 hız
+        can_bonus = upgrades.get("ekstra_can", 0)
+        self.can = MAKS_CAN + can_bonus
+        self.miknatıs_bonus = upgrades.get("miknatıs_sure", 0)  # İleride kullanılabilir
+
     # -------------------------------------------------------------------------
     # Nesne Üretimi
     # -------------------------------------------------------------------------
@@ -1233,12 +1558,23 @@ class GameManager:
                 sans = random.random()
                 if sans < 0.02:
                     self.dusen_nesneler.append(HealItem(x, hiz))
-                elif sans < 0.07:
+                elif sans < 0.05:
+                    # Güdümlü bomba (%3)
+                    self.dusen_nesneler.append(TakipBomba(x, hiz))
+                elif sans < 0.10:
                     self.dusen_nesneler.append(GoldenItem(x, hiz))
-                elif sans < 0.32:
+                elif sans < 0.35:
                     self.dusen_nesneler.append(BadItem(x, hiz, gorsel=self.bomba_img))
                 else:
                     self.dusen_nesneler.append(GoodItem(x, hiz, gorsel=self.elma_img))
+
+        # Hırsız kuş üretimi (her ~8 saniyede bir, seviye 3+)
+        if self.zorluk_seviyesi >= 3 and not self.boss_aktif:
+            self.hirsiz_kus_zamanlayici += 1
+            if self.hirsiz_kus_zamanlayici >= 480:
+                self.hirsiz_kus_zamanlayici = 0
+                if len(self.hirsiz_kuslar) < 2:
+                    self.hirsiz_kuslar.append(HirsizKus())
 
     # -------------------------------------------------------------------------
     # Zorluk Ayarlama
@@ -1314,7 +1650,7 @@ class GameManager:
                     self.sepet.squash_baslat()
                     self._kombo_artir()
 
-                elif isinstance(nesne, (BadItem, BossBomba)):
+                elif isinstance(nesne, (BadItem, BossBomba, TakipBomba)):
                     eski_can = self.can
                     self.can -= 1
                     self.hasar_alindi = True
@@ -1417,33 +1753,41 @@ class GameManager:
     # Arka Plan Çizimi
     # -------------------------------------------------------------------------
     def _arkaplan_ciz(self, hedef=None):
-        """Paralaks katmanlı arka plan çizer."""
+        """Paralaks katmanlı arka plan çizer (bölge desteği)."""
         ekran = hedef or self.ekran
-        # Gradyan gökyüzü
-        fever_mod = getattr(self, 'fever_aktif', False)
-        for y in range(EKRAN_YUKSEKLIK):
-            oran = y / EKRAN_YUKSEKLIK
-            if fever_mod:
-                # Fever: kırmızımsı parlak
-                pulse = abs(math.sin(getattr(self, 'fever_parlama', 0) * 0.05)) * 30
-                r = int(60 + 100 * oran + pulse)
-                g = int(20 + 60 * oran)
-                b = int(60 + 80 * oran + pulse * 0.5)
-            else:
-                r = int(30 + 100 * oran)
-                g = int(30 + 140 * oran)
-                b = int(80 + 120 * oran)
-            pygame.draw.line(ekran, (min(255, r), min(255, g), min(255, b)),
-                             (0, y), (EKRAN_GENISLIK, y))
+        # Bölge görseli varsa önce onu çiz
+        bolge_idx = getattr(self, 'aktif_bolge', 0)
+        if bolge_idx in getattr(self, 'bolge_gorselleri', {}):
+            ekran.blit(self.bolge_gorselleri[bolge_idx], (0, 0))
+        else:
+            # Gradyan gökyüzü (bölge renklerine göre)
+            fever_mod = getattr(self, 'fever_aktif', False)
+            bolge = BOLGE_TANIMLARI[bolge_idx]
+            gk = bolge["gokyuzu"]
+            for y in range(EKRAN_YUKSEKLIK):
+                oran = y / EKRAN_YUKSEKLIK
+                if fever_mod:
+                    pulse = abs(math.sin(getattr(self, 'fever_parlama', 0) * 0.05)) * 30
+                    r = int(60 + 100 * oran + pulse)
+                    g = int(20 + 60 * oran)
+                    b = int(60 + 80 * oran + pulse * 0.5)
+                else:
+                    r = int(gk[0] + (130 - gk[0]) * oran)
+                    g = int(gk[1] + (170 - gk[1]) * oran)
+                    b = int(gk[2] + (200 - gk[2]) * oran)
+                pygame.draw.line(ekran, (min(255, max(0, r)), min(255, max(0, g)), min(255, max(0, b))),
+                                 (0, y), (EKRAN_GENISLIK, y))
 
         # Paralaks katmanları
+        fever_mod = getattr(self, 'fever_aktif', False)
         for katman in self.paralaks_katmanlar:
             katman.ciz(ekran, fever_mod)
 
-        # Zemin (yeşil çimen)
+        # Zemin (bölge renklerine göre)
         zemin_y = EKRAN_YUKSEKLIK - 30
-        zemin_renk = (60, 30, 40) if fever_mod else KOYU_YESIL
-        cimen_renk = (100, 50, 60) if fever_mod else YESIL
+        bolge = BOLGE_TANIMLARI[bolge_idx]
+        zemin_renk = (60, 30, 40) if fever_mod else bolge["zemin"]
+        cimen_renk = (100, 50, 60) if fever_mod else bolge["cimen"]
         pygame.draw.rect(ekran, zemin_renk, (0, zemin_y, EKRAN_GENISLIK, 30))
         pygame.draw.rect(ekran, cimen_renk, (0, zemin_y, EKRAN_GENISLIK, 5))
 
@@ -1513,6 +1857,12 @@ class GameManager:
             gece_txt = self.mini_font.render("🌙 Gece Modu", True, (150, 150, 200))
             ekran.blit(gece_txt, (10, 48))
 
+        # Bölge göstergesi
+        bolge_idx = getattr(self, 'aktif_bolge', 0)
+        bolge_isim = BOLGE_TANIMLARI[bolge_idx]["isim"]
+        bolge_txt = self.mini_font.render(f"🌍 {bolge_isim}", True, BEYAZ)
+        ekran.blit(bolge_txt, (EKRAN_GENISLIK - bolge_txt.get_width() - 10, 48))
+
     # -------------------------------------------------------------------------
     # Ana Menü Ekranı
     # -------------------------------------------------------------------------
@@ -1578,7 +1928,7 @@ class GameManager:
                          buton_rect.centery - buton_yazi.get_height() // 2))
 
         # Market butonu
-        market_rect = pygame.Rect(EKRAN_GENISLIK // 2 - 100, 495, 200, 40)
+        market_rect = pygame.Rect(EKRAN_GENISLIK // 2 - 200, 495, 180, 40)
         if market_rect.collidepoint(fare):
             pygame.draw.rect(self.ekran, ALTIN, market_rect, border_radius=10)
         else:
@@ -1589,16 +1939,28 @@ class GameManager:
                         (market_rect.centerx - market_yazi.get_width() // 2,
                          market_rect.centery - market_yazi.get_height() // 2))
 
+        # Upgrade butonu
+        upgrade_rect = pygame.Rect(EKRAN_GENISLIK // 2 + 20, 495, 180, 40)
+        if upgrade_rect.collidepoint(fare):
+            pygame.draw.rect(self.ekran, ACIK_YESIL, upgrade_rect, border_radius=10)
+        else:
+            pygame.draw.rect(self.ekran, (30, 120, 60), upgrade_rect, border_radius=10)
+        pygame.draw.rect(self.ekran, BEYAZ, upgrade_rect, 2, border_radius=10)
+        upgrade_yazi = self.orta_font.render("⚡ Yetenekler", True, BEYAZ)
+        self.ekran.blit(upgrade_yazi,
+                        (upgrade_rect.centerx - upgrade_yazi.get_width() // 2,
+                         upgrade_rect.centery - upgrade_yazi.get_height() // 2))
+
         # Bakiye gösterimi
         bakiye = self.veritabani.bakiye_al()
         bakiye_yazi = self.kucuk_font.render(f"💰 Bakiye: {bakiye} puan", True, ALTIN)
         self.ekran.blit(bakiye_yazi, (EKRAN_GENISLIK // 2 - bakiye_yazi.get_width() // 2, 545))
 
         # ENTER ipucu
-        enter_yazi = self.kucuk_font.render("ENTER: Başlat  |  M: Market", True, GRI)
+        enter_yazi = self.kucuk_font.render("ENTER: Başlat | M: Market | U: Yetenekler", True, GRI)
         self.ekran.blit(enter_yazi, (EKRAN_GENISLIK // 2 - enter_yazi.get_width() // 2, 570))
 
-        return buton_rect, market_rect
+        return buton_rect, market_rect, upgrade_rect
 
     # -------------------------------------------------------------------------
     # Market Ekranı
@@ -1669,6 +2031,93 @@ class GameManager:
                                  al_rect.centery - fiyat_yazi.get_height() // 2))
                 if yeterli:
                     buton_rects[renk_adi] = ("al", al_rect)
+
+        # Geri butonu
+        geri_rect = pygame.Rect(EKRAN_GENISLIK // 2 - 80, EKRAN_YUKSEKLIK - 65, 160, 40)
+        if geri_rect.collidepoint(fare):
+            pygame.draw.rect(self.ekran, MAVI, geri_rect, border_radius=10)
+        else:
+            pygame.draw.rect(self.ekran, (40, 80, 160), geri_rect, border_radius=10)
+        pygame.draw.rect(self.ekran, BEYAZ, geri_rect, 2, border_radius=10)
+        geri_yazi = self.orta_font.render("← Geri", True, BEYAZ)
+        self.ekran.blit(geri_yazi,
+                        (geri_rect.centerx - geri_yazi.get_width() // 2,
+                         geri_rect.centery - geri_yazi.get_height() // 2))
+
+        return buton_rects, geri_rect
+
+    # -------------------------------------------------------------------------
+    # Upgrade (Yetenek Ağacı) Ekranı
+    # -------------------------------------------------------------------------
+    def _upgrade_ciz(self):
+        """Kalıcı geliştirme satın alma ekranını çizer."""
+        self._arkaplan_ciz()
+
+        overlay = pygame.Surface((EKRAN_GENISLIK, EKRAN_YUKSEKLIK), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 100))
+        self.ekran.blit(overlay, (0, 0))
+
+        # Panel
+        panel_rect = pygame.Rect(50, 40, EKRAN_GENISLIK - 100, EKRAN_YUKSEKLIK - 80)
+        pygame.draw.rect(self.ekran, (20, 30, 50), panel_rect, border_radius=15)
+        pygame.draw.rect(self.ekran, ACIK_YESIL, panel_rect, 2, border_radius=15)
+
+        baslik = self.buyuk_font.render("⚡ Yetenek Ağacı", True, ACIK_YESIL)
+        self.ekran.blit(baslik, (EKRAN_GENISLIK // 2 - baslik.get_width() // 2, 60))
+
+        bakiye = self.veritabani.bakiye_al()
+        bakiye_yazi = self.orta_font.render(f"💰 Bakiye: {bakiye} puan", True, BEYAZ)
+        self.ekran.blit(bakiye_yazi, (EKRAN_GENISLIK // 2 - bakiye_yazi.get_width() // 2, 105))
+
+        fare = pygame.mouse.get_pos()
+        buton_rects = {}
+        y_baslangic = 155
+
+        for idx, (uid, tanim) in enumerate(UPGRADE_TANIMLARI.items()):
+            y = y_baslangic + idx * 100
+            kart = pygame.Rect(100, y, EKRAN_GENISLIK - 200, 85)
+            pygame.draw.rect(self.ekran, (35, 45, 70), kart, border_radius=10)
+            if kart.collidepoint(fare):
+                pygame.draw.rect(self.ekran, ACIK_YESIL, kart, 2, border_radius=10)
+            else:
+                pygame.draw.rect(self.ekran, GRI, kart, 1, border_radius=10)
+
+            mevcut_seviye = self.veritabani.upgrade_seviye_al(uid)
+            maks = tanim["maks_seviye"]
+
+            # İsim
+            isim_yazi = self.orta_font.render(tanim["isim"], True, BEYAZ)
+            self.ekran.blit(isim_yazi, (120, y + 10))
+
+            # Seviye barı
+            bar_x = 120
+            bar_y = y + 45
+            bar_w = 200
+            bar_h = 14
+            pygame.draw.rect(self.ekran, KOYU_GRI, (bar_x, bar_y, bar_w, bar_h), border_radius=4)
+            if mevcut_seviye > 0:
+                doluluk = int(bar_w * (mevcut_seviye / maks))
+                pygame.draw.rect(self.ekran, ACIK_YESIL, (bar_x, bar_y, doluluk, bar_h), border_radius=4)
+            pygame.draw.rect(self.ekran, BEYAZ, (bar_x, bar_y, bar_w, bar_h), 1, border_radius=4)
+            seviye_txt = self.mini_font.render(f"Seviye {mevcut_seviye}/{maks}", True, BEYAZ)
+            self.ekran.blit(seviye_txt, (bar_x + bar_w + 10, bar_y - 1))
+
+            # Satın al butonu
+            if mevcut_seviye < maks:
+                fiyat = tanim["baz_fiyat"] + mevcut_seviye * tanim["artis"]
+                yeterli = bakiye >= fiyat
+                al_rect = pygame.Rect(EKRAN_GENISLIK - 270, y + 25, 130, 38)
+                renk = ACIK_YESIL if yeterli else KOYU_GRI
+                pygame.draw.rect(self.ekran, renk, al_rect, border_radius=8)
+                fiyat_yazi = self.kucuk_font.render(f"⬆ {fiyat}p", True, BEYAZ if yeterli else GRI)
+                self.ekran.blit(fiyat_yazi,
+                                (al_rect.centerx - fiyat_yazi.get_width() // 2,
+                                 al_rect.centery - fiyat_yazi.get_height() // 2))
+                if yeterli:
+                    buton_rects[uid] = al_rect
+            else:
+                maks_yazi = self.kucuk_font.render("✓ MAKS", True, ALTIN)
+                self.ekran.blit(maks_yazi, (EKRAN_GENISLIK - 240, y + 32))
 
         # Geri butonu
         geri_rect = pygame.Rect(EKRAN_GENISLIK // 2 - 80, EKRAN_YUKSEKLIK - 65, 160, 40)
@@ -1817,7 +2266,7 @@ class GameManager:
                     else:
                         # --- Diğer durumlar ---
                         if olay.key == pygame.K_ESCAPE:
-                            if self.durum in ("oyun", "bitti", "market"):
+                            if self.durum in ("oyun", "bitti", "market", "upgrade"):
                                 self.durum = "menu"
                             else:
                                 calisiyor = False
@@ -1833,15 +2282,21 @@ class GameManager:
                         if olay.key == pygame.K_m and self.durum == "menu":
                             self.durum = "market"
 
+                        if olay.key == pygame.K_u and self.durum == "menu":
+                            self.durum = "upgrade"
+
                 if olay.type == pygame.MOUSEBUTTONDOWN and olay.button == 1:
                     if self.durum == "menu":
                         basla_buton = pygame.Rect(EKRAN_GENISLIK // 2 - 120, 435, 240, 50)
-                        market_buton = pygame.Rect(EKRAN_GENISLIK // 2 - 100, 495, 200, 40)
+                        market_buton = pygame.Rect(EKRAN_GENISLIK // 2 - 200, 495, 180, 40)
+                        upgrade_buton = pygame.Rect(EKRAN_GENISLIK // 2 + 20, 495, 180, 40)
                         if basla_buton.collidepoint(olay.pos):
                             self._oyunu_sifirla()
                             self.durum = "oyun"
                         elif market_buton.collidepoint(olay.pos):
                             self.durum = "market"
+                        elif upgrade_buton.collidepoint(olay.pos):
+                            self.durum = "upgrade"
                     elif self.durum == "bitti":
                         buton = pygame.Rect(EKRAN_GENISLIK // 2 - 130, 380, 260, 50)
                         if buton.collidepoint(olay.pos):
@@ -1859,6 +2314,15 @@ class GameManager:
                                     elif islem == "sec":
                                         self.veritabani.aktif_sepet_ayarla(renk_adi)
                                         self.aktif_sepet_renk = renk_adi
+                                    break
+                    elif self.durum == "upgrade":
+                        buton_rects, geri_rect = self._upgrade_ciz()
+                        if geri_rect.collidepoint(olay.pos):
+                            self.durum = "menu"
+                        else:
+                            for uid, rect in buton_rects.items():
+                                if rect.collidepoint(olay.pos):
+                                    self.veritabani.upgrade_satin_al(uid)
                                     break
 
             # --- DURUM MAKİNESİ ---
@@ -1878,6 +2342,9 @@ class GameManager:
             elif self.durum == "market":
                 self._market_ciz()
 
+            elif self.durum == "upgrade":
+                self._upgrade_ciz()
+
             pygame.display.flip()
             self.saat.tick(FPS)
 
@@ -1895,16 +2362,35 @@ class GameManager:
         """
         self.toplam_kare += 1
 
-        # Sepet hareketi
+        # --- Rüzgar ve yağmur güncelle ---
+        self.ruzgar.guncelle()
+        self.yagmur.guncelle()
+
+        # --- Bölge (Biome) güncelle (her 2000 puanda değişir) ---
+        yeni_bolge = min(len(BOLGE_TANIMLARI) - 1, self.skor // 2000)
+        if yeni_bolge != self.aktif_bolge:
+            eski = self.aktif_bolge
+            self.aktif_bolge = yeni_bolge
+            bolge_isim = BOLGE_TANIMLARI[yeni_bolge]["isim"]
+            self.duyurular.append(Duyuru(f"BÖLGE: {bolge_isim}!", ACIK_MAVI, 100))
+
+        yercekim = BOLGE_TANIMLARI[self.aktif_bolge]["yercekim"]
+
+        # Sepet hareketi (kaygan zemin: yağmurda veya buz bölgesinde)
         tuslar = pygame.key.get_pressed()
-        self.sepet.hareket_et(tuslar)
+        kaygan = self.yagmur.aktif or self.aktif_bolge == 2  # Buz bölgesi
+        self.sepet.hareket_et(tuslar, kaygan_zemin=kaygan)
 
         # Yeni nesne üretimi
         self._nesne_uret()
 
-        # Nesneleri güncelle
+        # Nesneleri güncelle (rüzgar + yerçekimi)
+        sepet_x = self.sepet.x + self.sepet.base_genislik // 2
         for nesne in self.dusen_nesneler:
-            nesne.guncelle()
+            if isinstance(nesne, TakipBomba):
+                nesne.guncelle(sepet_x=sepet_x)
+            else:
+                nesne.guncelle(ruzgar_siddet=self.ruzgar.siddet, yercekim_carpan=yercekim)
 
         # Çarpışma kontrolü
         self._carpismalari_kontrol_et()
@@ -1973,6 +2459,11 @@ class GameManager:
             d.guncelle()
         self.duyurular = [d for d in self.duyurular if d.aktif]
 
+        # --- Hırsız kuşları güncelle ---
+        for kus in self.hirsiz_kuslar:
+            kus.guncelle(self.dusen_nesneler)
+        self.hirsiz_kuslar = [k for k in self.hirsiz_kuslar if k.aktif]
+
         # --- Görev bildirimlerini güncelle ---
         for g in self.gorev_bildirimleri:
             g.guncelle()
@@ -2026,6 +2517,16 @@ class GameManager:
 
         # Sepet
         self.sepet.ciz(hedef)
+
+        # Hırsız kuşlar
+        for kus in self.hirsiz_kuslar:
+            kus.ciz(hedef)
+
+        # Yağmur efekti
+        self.yagmur.ciz(hedef)
+
+        # Rüzgar göstergesi
+        self.ruzgar.ciz(hedef, self.mini_font)
 
         # Parçacık efektleri
         self.parcacik_yonetici.ciz(hedef)
