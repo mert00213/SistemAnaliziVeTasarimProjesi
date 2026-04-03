@@ -103,13 +103,16 @@ class ParalaksKatman:
         """Katmanı yatay olarak kaydırır."""
         self.offset = (self.offset + self.hiz) % EKRAN_GENISLIK
 
-    def ciz(self, ekran, fever_aktif=False):
+    def ciz(self, ekran, fever_aktif=False, ruzgar_siddet=0.0):
         """Katmanı çizer (görsel veya geometrik fallback)."""
         if self.gorsel:
             ekran.blit(self.gorsel, (-self.offset, 0))
             ekran.blit(self.gorsel, (EKRAN_GENISLIK - self.offset, 0))
         elif self.cizim_fonk:
-            self.cizim_fonk(ekran, self.offset, fever_aktif)
+            try:
+                self.cizim_fonk(ekran, self.offset, fever_aktif, ruzgar_siddet)
+            except TypeError:
+                self.cizim_fonk(ekran, self.offset, fever_aktif)
 
 
 def _bulut_ciz(ekran, offset, fever_aktif):
@@ -123,8 +126,8 @@ def _bulut_ciz(ekran, offset, fever_aktif):
         pygame.draw.ellipse(ekran, renk, (int(x) - br // 3, by + br // 5, int(br * 1.3), int(br * 0.7)))
 
 
-def _dag_ciz(ekran, offset, fever_aktif):
-    """Geometrik dağ / ağaç katmanı çizer."""
+def _dag_ciz(ekran, offset, fever_aktif, ruzgar_siddet=0.0):
+    """Geometrik dağ / ağaç katmanı çizer. Ağaçlar rüzgara göre sallanır."""
     dag_renk = (70, 50, 90) if fever_aktif else (50, 70, 50)
     agac_renk = (60, 110, 50) if fever_aktif else (30, 80, 30)
     daglar = [(0, 120), (200, 100), (400, 140), (600, 110), (800, 130)]
@@ -134,14 +137,20 @@ def _dag_ciz(ekran, offset, fever_aktif):
                      (int(x) + 80, EKRAN_YUKSEKLIK - 30 - dh),
                      (int(x) + 160, EKRAN_YUKSEKLIK - 30)]
         pygame.draw.polygon(ekran, dag_renk, noktalar)
+    # Rüzgar sallanma miktarı (±6 piksel maks, rüzgara orantılı)
+    if ruzgar_siddet is None:
+        ruzgar_siddet = 0.0
+    sallanma = max(-6, min(6, ruzgar_siddet * 2.0))
     agaclar = [(50, 35), (250, 28), (450, 40), (650, 32), (850, 38)]
     for ax, ah in agaclar:
         x = int((ax - offset * 2) % (EKRAN_GENISLIK + 100) - 50)
         govde = pygame.Rect(x + 8, EKRAN_YUKSEKLIK - 30 - ah, 6, ah)
         pygame.draw.rect(ekran, KAHVERENGI, govde)
+        # Ağaç tepesi rüzgarla sallansın
+        tepe_x = x + 11 + int(sallanma)
         pygame.draw.polygon(ekran, agac_renk,
                             [(x, EKRAN_YUKSEKLIK - 30 - ah),
-                             (x + 11, EKRAN_YUKSEKLIK - 30 - ah - 25),
+                             (tepe_x, EKRAN_YUKSEKLIK - 30 - ah - 25),
                              (x + 22, EKRAN_YUKSEKLIK - 30 - ah)])
 
 
@@ -945,10 +954,20 @@ class GoldenItem(FallingItem):
         self._parlama_sayac += 1
 
     def ciz(self, ekran):
-        """Altın elma - parlayan altın rengi ile çizer."""
+        """Altın elma - Surface tabanlı parlama efekti ile çizer."""
         merkez_x = self.x + self.genislik // 2
         merkez_y = self.y + self.yukseklik // 2
         yaricap = self.genislik // 2
+
+        # Surface tabanlı yumuşak altın parlama (glow)
+        parlama_alpha = int(80 + abs(math.sin(self._parlama_sayac * 0.08)) * 100)
+        glow_r = yaricap * 3
+        glow_surf = pygame.Surface((glow_r * 2, glow_r * 2), pygame.SRCALPHA)
+        pygame.draw.circle(glow_surf, (255, 215, 0, parlama_alpha // 2),
+                           (glow_r, glow_r), glow_r)
+        pygame.draw.circle(glow_surf, (255, 230, 80, parlama_alpha),
+                           (glow_r, glow_r), glow_r // 2)
+        ekran.blit(glow_surf, (merkez_x - glow_r, merkez_y - glow_r))
 
         # Parlama efekti (yanıp sönen dış halka)
         parlama = abs(math.sin(self._parlama_sayac * 0.1)) * 4
@@ -1450,6 +1469,19 @@ class SkorVeritabani:
                         tarih TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+                # Envanter (Skin) tablosu
+                bag.execute("""
+                    CREATE TABLE IF NOT EXISTS envanter (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        skin_adi TEXT UNIQUE NOT NULL,
+                        satin_alindi INTEGER DEFAULT 0,
+                        tarih TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                # İlk çalıştırma kontrolü
+                bag.execute(
+                    "INSERT OR IGNORE INTO oyuncu_veri (anahtar, deger) VALUES ('ilk_calistirma', '1')"
+                )
                 bag.commit()
         except sqlite3.Error as e:
             print(f"[UYARI] Veritabanı tablosu oluşturulamadı: {e}")
@@ -1705,6 +1737,60 @@ class SkorVeritabani:
             print(f"[UYARI] Ghost verisi yüklenemedi: {e}")
             return None
 
+    # --- Envanter (Skin) metotları ---
+    def skin_satin_al(self, skin_adi):
+        """Bir skin'i envantere ekler."""
+        fiyat = SEPET_RENKLERI.get(skin_adi, {}).get("fiyat", 0)
+        bakiye = self.bakiye_al()
+        if bakiye < fiyat:
+            return False
+        try:
+            with sqlite3.connect(self.db_yolu) as bag:
+                bag.execute(
+                    "INSERT OR REPLACE INTO envanter (skin_adi, satin_alindi) VALUES (?, 1)",
+                    (skin_adi,)
+                )
+                bag.commit()
+            self.bakiye_guncelle(-fiyat)
+            return True
+        except sqlite3.Error:
+            return False
+
+    def sahip_olunan_skinler(self):
+        """Envanterdeki tüm skin isimlerini döndürür."""
+        try:
+            with sqlite3.connect(self.db_yolu) as bag:
+                cursor = bag.execute(
+                    "SELECT skin_adi FROM envanter WHERE satin_alindi = 1"
+                )
+                return [row[0] for row in cursor.fetchall()]
+        except sqlite3.Error:
+            return ["kahverengi"]
+
+    # --- İlk çalıştırma kontrolü ---
+    def ilk_calistirma_mi(self):
+        """Oyun ilk kez mi açılıyor kontrol eder."""
+        try:
+            with sqlite3.connect(self.db_yolu) as bag:
+                cursor = bag.execute(
+                    "SELECT deger FROM oyuncu_veri WHERE anahtar = 'ilk_calistirma'"
+                )
+                sonuc = cursor.fetchone()
+                return sonuc is not None and sonuc[0] == '1'
+        except sqlite3.Error:
+            return False
+
+    def ilk_calistirma_tamam(self):
+        """İlk çalıştırma bayrağını kapatır."""
+        try:
+            with sqlite3.connect(self.db_yolu) as bag:
+                bag.execute(
+                    "UPDATE oyuncu_veri SET deger = '0' WHERE anahtar = 'ilk_calistirma'"
+                )
+                bag.commit()
+        except sqlite3.Error:
+            pass
+
 
 # =============================================================================
 # SINIF: GameManager (Oyun Yöneticisi)
@@ -1810,8 +1896,11 @@ class GameManager:
         # --- Veritabanı ---
         self.veritabani = SkorVeritabani(VERITABANI_YOLU)
 
-        # Oyun durumu: "menu", "oyun", "isim_gir", "bitti", "market"
-        self.durum = "menu"
+        # Oyun durumu: "menu", "oyun", "isim_gir", "bitti", "market", "tutorial"
+        if self.veritabani.ilk_calistirma_mi():
+            self.durum = "tutorial"
+        else:
+            self.durum = "menu"
         self.en_yuksek_skor = self.veritabani.en_yuksek_skor()
 
         # Aktif sepet rengi
@@ -1982,6 +2071,10 @@ class GameManager:
 
         # Ghost kayıt sıfırla (yeni oyun başlıyor)
         self.ghost_kayit = []
+
+        # Elastik skor titreşimi ve istatistik izleme
+        self._skor_titresim = 0
+        self.en_yuksek_kombo = 0
         self._ghost_yukle()
 
         # Dinamik zorluk motoru sıfırla
@@ -2168,6 +2261,10 @@ class GameManager:
     def _kombo_artir(self):
         """Kombo sayacını artırır, çarpanı günceller ve görsel efekt ekler."""
         self.kombo_sayac += 1
+        # Elastik skor titreşimi tetikle ve en yüksek komboyu güncelle
+        self._skor_titresim = 15
+        if self.kombo_sayac > self.en_yuksek_kombo:
+            self.en_yuksek_kombo = self.kombo_sayac
         if self.kombo_sayac >= 20:
             self.kombo_carpan = 10
             if self.kombo_sayac == 20:
@@ -2270,8 +2367,9 @@ class GameManager:
 
         # Paralaks katmanları
         fever_mod = getattr(self, 'fever_aktif', False)
+        ruzgar_s = getattr(self.ruzgar, 'siddet', 0.0) if hasattr(self, 'ruzgar') else 0.0
         for katman in self.paralaks_katmanlar:
-            katman.ciz(ekran, fever_mod)
+            katman.ciz(ekran, fever_mod, ruzgar_s)
 
         # Zemin (bölge renklerine göre)
         zemin_y = EKRAN_YUKSEKLIK - 30
@@ -2316,7 +2414,21 @@ class GameManager:
             skor_yazi = self.orta_font.render(f"Skor: {self.skor} (x{self.kombo_carpan})", True, skor_renk)
         else:
             skor_yazi = self.orta_font.render(f"Skor: {self.skor}", True, skor_renk)
-        ekran.blit(skor_yazi, (15, 8))
+
+        # Elastik titreşim efekti (kombo artışında tetiklenir)
+        titresim = getattr(self, '_skor_titresim', 0)
+        if titresim > 0:
+            self._skor_titresim = titresim - 1
+            t = titresim / 15.0
+            olcek = 1.0 + 0.15 * t * abs(math.sin(titresim * 0.8))
+            kaydirma_y = int(3 * math.sin(titresim * 1.2) * t)
+            orijinal_boyut = skor_yazi.get_size()
+            yeni_w = int(orijinal_boyut[0] * olcek)
+            yeni_h = int(orijinal_boyut[1] * olcek)
+            skor_yazi = pygame.transform.smoothscale(skor_yazi, (yeni_w, yeni_h))
+            ekran.blit(skor_yazi, (15, 8 + kaydirma_y - (yeni_h - orijinal_boyut[1]) // 2))
+        else:
+            ekran.blit(skor_yazi, (15, 8))
 
         # Zorluk seviyesi
         zorluk_yazi = self.kucuk_font.render(f"Seviye: {self.zorluk_seviyesi}", True, ACIK_MAVI)
@@ -2660,7 +2772,7 @@ class GameManager:
     # Oyun Bitti Ekranı
     # -------------------------------------------------------------------------
     def _bitti_ekrani_ciz(self):
-        """Oyun bittiğinde gösterilen sonuç ekranını çizer."""
+        """Oyun bittiğinde gösterilen sonuç ve istatistik ekranını çizer."""
         self._arkaplan_ciz()
 
         # Yarı saydam karartma
@@ -2668,35 +2780,66 @@ class GameManager:
         overlay.fill((0, 0, 0, 100))
         self.ekran.blit(overlay, (0, 0))
 
-        # Panel
-        panel_rect = pygame.Rect(EKRAN_GENISLIK // 2 - 200, 100, 400, 380)
+        # Genişletilmiş panel
+        panel_rect = pygame.Rect(EKRAN_GENISLIK // 2 - 220, 30, 440, 530)
         pygame.draw.rect(self.ekran, (30, 30, 60), panel_rect, border_radius=15)
         pygame.draw.rect(self.ekran, BEYAZ, panel_rect, 2, border_radius=15)
 
         # Başlık
         baslik = self.buyuk_font.render("OYUN BİTTİ!", True, KIRMIZI)
-        self.ekran.blit(baslik, (EKRAN_GENISLIK // 2 - baslik.get_width() // 2, 130))
+        self.ekran.blit(baslik, (EKRAN_GENISLIK // 2 - baslik.get_width() // 2, 45))
 
         # Skor
         skor_yazi = self.orta_font.render(f"Skorun: {self.son_skor}", True, BEYAZ)
-        self.ekran.blit(skor_yazi, (EKRAN_GENISLIK // 2 - skor_yazi.get_width() // 2, 200))
-
-        # Zorluk
-        seviye_yazi = self.orta_font.render(f"Ulaşılan Seviye: {self.zorluk_seviyesi}", True, ACIK_MAVI)
-        self.ekran.blit(seviye_yazi, (EKRAN_GENISLIK // 2 - seviye_yazi.get_width() // 2, 240))
-
-        # En yüksek skor
-        eys_yazi = self.orta_font.render(f"En Yüksek Skor: {self.en_yuksek_skor}", True, SARI)
-        self.ekran.blit(eys_yazi, (EKRAN_GENISLIK // 2 - eys_yazi.get_width() // 2, 290))
+        self.ekran.blit(skor_yazi, (EKRAN_GENISLIK // 2 - skor_yazi.get_width() // 2, 95))
 
         # Yeni rekor bildirimi
         if self.son_skor >= self.en_yuksek_skor and self.son_skor > 0:
             if (pygame.time.get_ticks() // 400) % 2 == 0:
                 rekor = self.orta_font.render("★ YENİ REKOR! ★", True, SARI)
-                self.ekran.blit(rekor, (EKRAN_GENISLIK // 2 - rekor.get_width() // 2, 330))
+                self.ekran.blit(rekor, (EKRAN_GENISLIK // 2 - rekor.get_width() // 2, 125))
+
+        # --- İstatistik Paneli ---
+        stat_y = 160
+        ayirici_renk = (80, 80, 120)
+        pygame.draw.line(self.ekran, ayirici_renk,
+                         (EKRAN_GENISLIK // 2 - 180, stat_y),
+                         (EKRAN_GENISLIK // 2 + 180, stat_y), 1)
+        stat_baslik = self.orta_font.render("İstatistikler", True, ACIK_MAVI)
+        self.ekran.blit(stat_baslik, (EKRAN_GENISLIK // 2 - stat_baslik.get_width() // 2, stat_y + 5))
+
+        # Süre hesaplama
+        sure_saniye = getattr(self, 'toplam_kare', 0) / max(1, FPS)
+        dakika = int(sure_saniye // 60)
+        saniye = int(sure_saniye % 60)
+        sure_str = f"{dakika}dk {saniye}sn" if dakika > 0 else f"{saniye}sn"
+
+        istatistikler = [
+            ("🍎  Toplanan Elma", str(getattr(self, 'toplanan_elma_sayisi', 0))),
+            ("⭐  Toplanan Altın", str(getattr(self, 'toplanan_altin_sayisi', 0))),
+            ("🔥  En Yüksek Kombo", f"x{getattr(self, 'en_yuksek_kombo', 0)}"),
+            ("📈  Ulaşılan Seviye", str(self.zorluk_seviyesi)),
+            ("⏱️  Süre", sure_str),
+            ("🏆  En Yüksek Skor", str(self.en_yuksek_skor)),
+        ]
+
+        stat_y += 35
+        sol_x = EKRAN_GENISLIK // 2 - 170
+        sag_x = EKRAN_GENISLIK // 2 + 170
+        for etiket, deger in istatistikler:
+            etiket_yazi = self.kucuk_font.render(etiket, True, GRI)
+            deger_yazi = self.kucuk_font.render(deger, True, BEYAZ)
+            self.ekran.blit(etiket_yazi, (sol_x, stat_y))
+            self.ekran.blit(deger_yazi, (sag_x - deger_yazi.get_width(), stat_y))
+            stat_y += 28
+
+        # Alt ayırıcı
+        pygame.draw.line(self.ekran, ayirici_renk,
+                         (EKRAN_GENISLIK // 2 - 180, stat_y + 5),
+                         (EKRAN_GENISLIK // 2 + 180, stat_y + 5), 1)
 
         # Tekrar oyna butonu
-        buton_rect = pygame.Rect(EKRAN_GENISLIK // 2 - 130, 380, 260, 50)
+        buton_rect = pygame.Rect(EKRAN_GENISLIK // 2 - 130, stat_y + 20, 260, 50)
         fare = pygame.mouse.get_pos()
         if buton_rect.collidepoint(fare):
             pygame.draw.rect(self.ekran, MAVI, buton_rect, border_radius=10)
@@ -2710,7 +2853,7 @@ class GameManager:
                          buton_rect.centery - tekrar_yazi.get_height() // 2))
 
         # Tekrar İzle butonu (Replay)
-        replay_rect = pygame.Rect(EKRAN_GENISLIK // 2 - 130, 440, 260, 42)
+        replay_rect = pygame.Rect(EKRAN_GENISLIK // 2 - 130, stat_y + 78, 260, 42)
         replay_var = len(self.replay.kareler) > 0
         if replay_var:
             if replay_rect.collidepoint(fare):
@@ -2727,8 +2870,8 @@ class GameManager:
                          replay_rect.centery - replay_yazi.get_height() // 2))
 
         # Çıkış ipucu
-        cikis = self.kucuk_font.render("ESC: Menüye Dön  |  ENTER: Tekrar Oyna  |  R: İzle", True, GRI)
-        self.ekran.blit(cikis, (EKRAN_GENISLIK // 2 - cikis.get_width() // 2, 495))
+        cikis = self.kucuk_font.render("ESC: Menü  |  ENTER: Tekrar  |  R: İzle", True, GRI)
+        self.ekran.blit(cikis, (EKRAN_GENISLIK // 2 - cikis.get_width() // 2, stat_y + 130))
 
         return buton_rect, replay_rect
 
@@ -2859,6 +3002,43 @@ class GameManager:
             pygame.draw.rect(self.ekran, TURUNCU, (0, bar_y, int(EKRAN_GENISLIK * ilerleme), 4))
 
     # -------------------------------------------------------------------------
+    # Tutorial (İlk Çalıştırma) Ekranı
+    # -------------------------------------------------------------------------
+    def _tutorial_ciz(self):
+        """İlk kez oynayan kullanıcıya kontrolleri ve kuralları gösterir."""
+        self.ekran.fill((20, 20, 40))
+
+        # Başlık
+        baslik = self.buyuk_font.render("Nasıl Oynanır?", True, ALTIN)
+        self.ekran.blit(baslik, (EKRAN_GENISLIK // 2 - baslik.get_width() // 2, 40))
+
+        # Talimatlar
+        talimatlar = [
+            ("← → / A D", "Sepeti sağa-sola hareket ettir"),
+            ("🍎  Yeşil Elma", "+10 puan kazandırır"),
+            ("⭐  Altın Elma", "+100 puan (nadir, hızlı düşer)"),
+            ("💣  Bomba", "Can kaybedersin, kaçın!"),
+            ("❤️  Can Paketi", "+1 can (çok nadir)"),
+            ("🌬️  Rüzgar", "Nesneleri sağa-sola iter"),
+            ("🔥  Kombo", "Art arda yakala → çarpan artar"),
+            ("⚡  Fever Modu", "Kombo barı dolunca aktif olur"),
+        ]
+
+        y = 110
+        for sembol, aciklama in talimatlar:
+            sembol_yazi = self.orta_font.render(sembol, True, SARI)
+            self.ekran.blit(sembol_yazi, (60, y))
+            aciklama_yazi = self.kucuk_font.render(aciklama, True, BEYAZ)
+            self.ekran.blit(aciklama_yazi, (280, y + 4))
+            y += 42
+
+        # İpucu
+        ipucu = self.orta_font.render("Herhangi bir tuşa bas veya tıkla", True, ACIK_MAVI)
+        alpha = int(127 + 128 * abs(math.sin(pygame.time.get_ticks() * 0.003)))
+        ipucu.set_alpha(alpha)
+        self.ekran.blit(ipucu, (EKRAN_GENISLIK // 2 - ipucu.get_width() // 2, EKRAN_YUKSEKLIK - 70))
+
+    # -------------------------------------------------------------------------
     # Ana Oyun Döngüsü
     # -------------------------------------------------------------------------
     def calistir(self):
@@ -2889,6 +3069,11 @@ class GameManager:
                                 self.oyuncu_ismi += olay.unicode
                     else:
                         # --- Diğer durumlar ---
+                        if self.durum == "tutorial":
+                            self.veritabani.ilk_calistirma_tamam()
+                            self.durum = "menu"
+                            continue
+
                         if olay.key == pygame.K_ESCAPE:
                             if self.durum in ("oyun", "bitti", "market", "upgrade", "replay"):
                                 self.durum = "menu"
@@ -2916,7 +3101,10 @@ class GameManager:
                             self.durum = "upgrade"
 
                 if olay.type == pygame.MOUSEBUTTONDOWN and olay.button == 1:
-                    if self.durum == "menu":
+                    if self.durum == "tutorial":
+                        self.veritabani.ilk_calistirma_tamam()
+                        self.durum = "menu"
+                    elif self.durum == "menu":
                         basla_buton = pygame.Rect(EKRAN_GENISLIK // 2 - 120, 435, 240, 50)
                         market_buton = pygame.Rect(EKRAN_GENISLIK // 2 - 200, 495, 180, 40)
                         upgrade_buton = pygame.Rect(EKRAN_GENISLIK // 2 + 20, 495, 180, 40)
@@ -2928,8 +3116,10 @@ class GameManager:
                         elif upgrade_buton.collidepoint(olay.pos):
                             self.durum = "upgrade"
                     elif self.durum == "bitti":
-                        buton = pygame.Rect(EKRAN_GENISLIK // 2 - 130, 380, 260, 50)
-                        replay_buton = pygame.Rect(EKRAN_GENISLIK // 2 - 130, 440, 260, 42)
+                        # İstatistik paneli sonrasındaki buton pozisyonları
+                        _stat_y = 160 + 35 + 6 * 28  # 363
+                        buton = pygame.Rect(EKRAN_GENISLIK // 2 - 130, _stat_y + 20, 260, 50)
+                        replay_buton = pygame.Rect(EKRAN_GENISLIK // 2 - 130, _stat_y + 78, 260, 42)
                         if buton.collidepoint(olay.pos):
                             self._oyunu_sifirla()
                             self.durum = "oyun"
@@ -2960,7 +3150,10 @@ class GameManager:
                                     break
 
             # --- DURUM MAKİNESİ ---
-            if self.durum == "menu":
+            if self.durum == "tutorial":
+                self._tutorial_ciz()
+
+            elif self.durum == "menu":
                 self._menu_ciz()
 
             elif self.durum == "oyun":
