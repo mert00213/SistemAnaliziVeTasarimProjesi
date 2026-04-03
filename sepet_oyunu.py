@@ -146,24 +146,28 @@ def _dag_ciz(ekran, offset, fever_aktif):
 # SINIF: EkranSarsintisi (Screen Shake)
 # =============================================================================
 class EkranSarsintisi:
-    """Bombaya çarpınca veya can gidince ekran titremesi."""
+    """Bombaya çarpınca veya can gidince ekran titremesi (0.3s decay)."""
 
     def __init__(self):
-        self.sure = 0  # Kalan kare sayısı
+        self.sure = 0
+        self.max_sure = 0
         self.siddet = 0
 
-    def baslat(self, sure_kare=12, siddet=8):
-        """Sarsıntı başlatır (varsayılan ~0.2 saniye, 60 FPS)."""
+    def baslat(self, sure_kare=18, siddet=10):
+        """Sarsıntı başlatır (varsayılan 0.3 saniye, 60 FPS)."""
         self.sure = sure_kare
+        self.max_sure = sure_kare
         self.siddet = siddet
 
     def offset_al(self):
-        """Bu karedeki x,y kayma miktarını döndürür."""
+        """Bu karedeki x,y kayma miktarını azalan şiddetle döndürür."""
         if self.sure <= 0:
             return 0, 0
         self.sure -= 1
-        x = random.randint(-self.siddet, self.siddet)
-        y = random.randint(-self.siddet, self.siddet)
+        oran = self.sure / max(1, self.max_sure)
+        gercek_siddet = max(1, int(self.siddet * oran))
+        x = random.randint(-gercek_siddet, gercek_siddet)
+        y = random.randint(-gercek_siddet, gercek_siddet)
         return x, y
 
 
@@ -381,7 +385,9 @@ class YagmurSistemi:
 # SINIF: Particle (Parçacık Efekti)
 # =============================================================================
 class Particle:
-    """Çarpışma efektleri için küçük renkli kare parçacık."""
+    """Çarpışma efektleri için küçük renkli kare parçacık (optimize)."""
+    # Önceden oluşturulmuş Surface havuzu (boyut -> Surface)
+    _surf_cache = {}
 
     def __init__(self, x, y, renk):
         self.x = float(x)
@@ -390,7 +396,7 @@ class Particle:
         self.vy = random.uniform(-6, -1)
         self.boyut = random.randint(3, 7)
         self.renk = renk
-        self.omur = random.randint(30, 60)  # 0.5 - 1 saniye (60 FPS'de)
+        self.omur = random.randint(25, 50)
         self.max_omur = self.omur
         self.aktif = True
 
@@ -398,34 +404,41 @@ class Particle:
         """Parçacığı hareket ettirir ve ömrünü azaltır."""
         self.x += self.vx
         self.y += self.vy
-        self.vy += 0.15  # Yerçekimi
+        self.vy += 0.15
         self.omur -= 1
         if self.omur <= 0:
             self.aktif = False
 
     def ciz(self, ekran):
-        """Parçacığı solarak çizer."""
+        """Parçacığı solarak çizer (Surface havuzlu)."""
         if not self.aktif:
             return
-        alpha = int(255 * (self.omur / self.max_omur))
-        boyut = max(1, int(self.boyut * (self.omur / self.max_omur)))
-        surf = pygame.Surface((boyut, boyut), pygame.SRCALPHA)
+        oran = self.omur / self.max_omur
+        boyut = max(1, int(self.boyut * oran))
+        alpha = int(255 * oran)
+        anahtar = boyut
+        if anahtar not in Particle._surf_cache:
+            Particle._surf_cache[anahtar] = pygame.Surface((boyut, boyut), pygame.SRCALPHA)
+        surf = Particle._surf_cache[anahtar].copy()
         surf.fill((*self.renk[:3], alpha))
         ekran.blit(surf, (int(self.x), int(self.y)))
 
 
 # =============================================================================
-# SINIF: ParticleManager (Parçacık Yöneticisi)
+# SINIF: ParticleManager (Parçacık Yöneticisi - Optimize)
 # =============================================================================
 class ParticleManager:
-    """Tüm parçacıkları yöneten sınıf."""
+    """Tüm parçacıkları yöneten sınıf. Maks 200 parçacık sınırı."""
+    MAKS_PARCACIK = 200
 
     def __init__(self):
         self.parcaciklar = []
 
     def patlama_ekle(self, x, y, renk, adet=15):
         """Belirtilen noktada parçacık patlaması oluşturur."""
-        for _ in range(adet):
+        bos_yer = ParticleManager.MAKS_PARCACIK - len(self.parcaciklar)
+        ekle = min(adet, bos_yer)
+        for _ in range(ekle):
             self.parcaciklar.append(Particle(x, y, renk))
 
     def guncelle(self):
@@ -1516,6 +1529,11 @@ class GameManager:
         self.hirsiz_kuslar = []
         self.hirsiz_kus_zamanlayici = 0
 
+        # Bölge geçiş (fade) efekti
+        self.bolge_fade_alpha = 0
+        self.bolge_fade_durum = None  # None / "karart" / "aydinlat"
+        self.bolge_fade_hedef = 0     # Geçilecek bölge indeksi
+
         # Upgrade'ları uygula
         upgrades = self.veritabani.tum_upgradeler()
         hiz_bonus = upgrades.get("sepet_hizi", 0)
@@ -1694,12 +1712,30 @@ class GameManager:
                     )
 
     def _kombo_artir(self):
-        """Kombo sayacını artırır ve çarpanı günceller."""
+        """Kombo sayacını artırır, çarpanı günceller ve görsel efekt ekler."""
         self.kombo_sayac += 1
-        if self.kombo_sayac >= 10:
+        if self.kombo_sayac >= 20:
+            self.kombo_carpan = 10
+            if self.kombo_sayac == 20:
+                self.duyurular.append(Duyuru("LEGENDARY!", (255, 50, 255), 120))
+                if self.kombo_ses:
+                    self.kombo_ses.play()
+        elif self.kombo_sayac >= 15:
+            self.kombo_carpan = 7
+            if self.kombo_sayac == 15:
+                self.duyurular.append(Duyuru("FANTASTIC!", (0, 255, 200), 100))
+                if self.kombo_ses:
+                    self.kombo_ses.play()
+        elif self.kombo_sayac >= 10:
             self.kombo_carpan = 5
             if self.kombo_sayac == 10:
                 self.duyurular.append(Duyuru("UNSTOPPABLE!", ALTIN, 90))
+                if self.kombo_ses:
+                    self.kombo_ses.play()
+        elif self.kombo_sayac >= 7:
+            self.kombo_carpan = 3
+            if self.kombo_sayac == 7:
+                self.duyurular.append(Duyuru("AMAZING!", TURUNCU, 80, EKRAN_YUKSEKLIK // 3 + 60))
                 if self.kombo_ses:
                     self.kombo_ses.play()
         elif self.kombo_sayac >= 5:
@@ -1711,7 +1747,7 @@ class GameManager:
         else:
             self.kombo_carpan = 1
 
-        # Kombo barı doldur (%20 oranında dolar, 10 toplamada bar dolar)
+        # Kombo barı doldur
         self.kombo_bar = min(1.0, self.kombo_bar + 0.1)
 
         # Bar dolduysa Fever mode başlat
@@ -1802,11 +1838,30 @@ class GameManager:
         panel.fill((0, 0, 0, 120))
         ekran.blit(panel, (0, 0))
 
-        # Skor (kombo çarpanı ile)
-        if self.kombo_carpan > 1:
-            skor_yazi = self.orta_font.render(f"Skor: {self.skor} (x{self.kombo_carpan})", True, ALTIN)
+        # Skor (kombo çarpanı ile - renk kombo seviyesine göre değişir)
+        if self.kombo_sayac >= 20:
+            # Gökkuşağı efekti
+            t = pygame.time.get_ticks() * 0.003
+            sr = int(127 + 128 * math.sin(t))
+            sg = int(127 + 128 * math.sin(t + 2.1))
+            sb = int(127 + 128 * math.sin(t + 4.2))
+            skor_renk = (sr, sg, sb)
+        elif self.kombo_sayac >= 15:
+            skor_renk = (0, 255, 200)
+        elif self.kombo_sayac >= 10:
+            skor_renk = ALTIN
+        elif self.kombo_sayac >= 7:
+            skor_renk = TURUNCU
+        elif self.kombo_sayac >= 5:
+            skor_renk = SARI
+        elif self.kombo_carpan > 1:
+            skor_renk = ALTIN
         else:
-            skor_yazi = self.orta_font.render(f"Skor: {self.skor}", True, BEYAZ)
+            skor_renk = BEYAZ
+        if self.kombo_carpan > 1:
+            skor_yazi = self.orta_font.render(f"Skor: {self.skor} (x{self.kombo_carpan})", True, skor_renk)
+        else:
+            skor_yazi = self.orta_font.render(f"Skor: {self.skor}", True, skor_renk)
         ekran.blit(skor_yazi, (15, 8))
 
         # Zorluk seviyesi
@@ -2366,13 +2421,26 @@ class GameManager:
         self.ruzgar.guncelle()
         self.yagmur.guncelle()
 
-        # --- Bölge (Biome) güncelle (her 2000 puanda değişir) ---
+        # --- Bölge (Biome) güncelle (her 2000 puanda değişir, fade geçiş) ---
         yeni_bolge = min(len(BOLGE_TANIMLARI) - 1, self.skor // 2000)
-        if yeni_bolge != self.aktif_bolge:
-            eski = self.aktif_bolge
-            self.aktif_bolge = yeni_bolge
-            bolge_isim = BOLGE_TANIMLARI[yeni_bolge]["isim"]
-            self.duyurular.append(Duyuru(f"BÖLGE: {bolge_isim}!", ACIK_MAVI, 100))
+        if yeni_bolge != self.aktif_bolge and self.bolge_fade_durum is None:
+            self.bolge_fade_durum = "karart"
+            self.bolge_fade_hedef = yeni_bolge
+            self.bolge_fade_alpha = 0
+
+        # Fade animasyonu güncelle
+        if self.bolge_fade_durum == "karart":
+            self.bolge_fade_alpha = min(255, self.bolge_fade_alpha + 8)
+            if self.bolge_fade_alpha >= 255:
+                self.aktif_bolge = self.bolge_fade_hedef
+                bolge_isim = BOLGE_TANIMLARI[self.aktif_bolge]["isim"]
+                self.duyurular.append(Duyuru(f"BÖLGE: {bolge_isim}!", ACIK_MAVI, 100))
+                self.bolge_fade_durum = "aydinlat"
+        elif self.bolge_fade_durum == "aydinlat":
+            self.bolge_fade_alpha = max(0, self.bolge_fade_alpha - 6)
+            if self.bolge_fade_alpha <= 0:
+                self.bolge_fade_durum = None
+                self.bolge_fade_alpha = 0
 
         yercekim = BOLGE_TANIMLARI[self.aktif_bolge]["yercekim"]
 
@@ -2531,10 +2599,41 @@ class GameManager:
         # Parçacık efektleri
         self.parcacik_yonetici.ciz(hedef)
 
-        # --- Gece modu overlay + spotlight ---
+        # --- Gece modu: Dinamik ışık haleleri + spotlight ---
         if self.gece_modu:
+            # Önce nesnelerin ışık halelerini additif blend ile çiz
+            isik_surface = pygame.Surface((EKRAN_GENISLIK, EKRAN_YUKSEKLIK), pygame.SRCALPHA)
+            isik_surface.fill((0, 0, 0, 0))
+            for nesne in self.dusen_nesneler:
+                if not nesne.aktif:
+                    continue
+                cx = int(nesne.x + nesne.genislik // 2)
+                cy = int(nesne.y + nesne.yukseklik // 2)
+                # Her nesne türüne farklı renk hale
+                if isinstance(nesne, GoldenItem):
+                    hale_renk = (60, 50, 10, 50)
+                    hale_r = 30
+                elif isinstance(nesne, GoodItem):
+                    hale_renk = (50, 15, 15, 40)
+                    hale_r = 24
+                elif isinstance(nesne, HealItem):
+                    hale_renk = (10, 50, 20, 45)
+                    hale_r = 26
+                elif isinstance(nesne, (BadItem, TakipBomba)):
+                    hale_renk = (50, 20, 0, 35)
+                    hale_r = 22
+                else:
+                    hale_renk = (30, 30, 40, 30)
+                    hale_r = 20
+                pygame.draw.circle(isik_surface, hale_renk, (cx, cy), hale_r)
+            # Sepet ışığı
+            scx = int(self.sepet.x + self.sepet.base_genislik // 2)
+            scy = int(self.sepet.y + self.sepet.base_yukseklik // 2)
+            pygame.draw.circle(isik_surface, (40, 35, 20, 50), (scx, scy), 50)
+            hedef.blit(isik_surface, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
+
+            # Karanlık katmanı + spotlight
             self.gece_surface.fill((0, 0, 0, 160))
-            # Spotlight: sepet etrafında aydınlık daire
             sepet_cx = self.sepet.x + self.sepet.base_genislik // 2
             sepet_cy = self.sepet.y + self.sepet.base_yukseklik // 2
             isik = pygame.Surface((EKRAN_GENISLIK, EKRAN_YUKSEKLIK), pygame.SRCALPHA)
@@ -2552,6 +2651,13 @@ class GameManager:
         # Görev bildirimleri
         for g in self.gorev_bildirimleri:
             g.ciz(hedef, self.buyuk_font, self.kucuk_font)
+
+        # --- Bölge geçiş fade efekti ---
+        fade_alpha = getattr(self, 'bolge_fade_alpha', 0)
+        if fade_alpha > 0:
+            fade_surf = pygame.Surface((EKRAN_GENISLIK, EKRAN_YUKSEKLIK), pygame.SRCALPHA)
+            fade_surf.fill((0, 0, 0, min(255, fade_alpha)))
+            hedef.blit(fade_surf, (0, 0))
 
         # Ekran sarsıntısı offseti ile ana ekrana blit
         ox, oy = self.ekran_sarsintisi.offset_al()
